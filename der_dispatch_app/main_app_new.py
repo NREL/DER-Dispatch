@@ -1,3 +1,31 @@
+# Copyright (c) 2019 Alliance for Sustainable Energy, LLC
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 import argparse
 import collections
 from collections import defaultdict
@@ -13,6 +41,8 @@ import zmq
 import zlib
 
 from matplotlib import pyplot as plt
+from pandas.plotting import register_matplotlib_converters
+register_matplotlib_converters()
 import os
 import shutil
 import sys
@@ -22,11 +52,9 @@ import time
 from uuid import uuid4
 sys.path.append('/usr/src/gridappsd-python')
 from gridappsd import GridAPPSD, DifferenceBuilder
-# from gridappsd.topics import fncs_input_topic, fncs_output_topic
-from gridappsd.topics import simulation_input_topic, simulation_output_topic
+from gridappsd.topics import simulation_input_topic, simulation_output_topic, simulation_log_topic
 input_from_goss_topic = '/topic/goss.gridappsd.fncs.input'
-# import opendssdirect as dss
-
+SIMULATION_STATUS_LOG_TOPIC = '/topic/goss.gridappsd.simulation.log'
 
 from DER_Dispatch_base import DER_Dispatch_base
 # import y_helper_functions
@@ -73,6 +101,7 @@ class DER_Dispatch(DER_Dispatch_base):
         DER_Dispatch_base.__init__(self, None) # TODO redo this
         # if running_on_host():
         #     exit()
+        self._is_running = True
         self.timestamp_ = 0
         self._vmult = .001
         self.slack_number = 3
@@ -88,14 +117,20 @@ class DER_Dispatch(DER_Dispatch_base):
         self._RTOPF_flag = app_config.get('OPF', 1)
         self._run_freq = app_config.get('run_freq', 30)
         self._run_realtime = app_config.get('run_realtime',True)
+        self._optimizer_num_iterations = app_config.get('optimizer_num_iterations',30)
         self._load_scale = load_scale
 
         # start_time = 1374498000 + (0 * 60 * 60)
-        start_time = start_time + (0 * 60 * 60)
-        end_time = start_time + 3600 * 24
+        t = datetime.utcfromtimestamp(start_time)
+        adjusted_time = int(t.replace(year=2013).replace(tzinfo=timezone.utc).timestamp())
+        start_time = adjusted_time + (0 * 60 * 60)
+        end_time = adjusted_time + 3600 * 24
+        # self._weather_df = query_weather.query_weather(start_time , end_time )
         self._weather_df = query_weather.query_weather(start_time * 1000000, end_time * 1000000)
+        # print(self._weather_df)
 
         self.sim_start = 0
+        self._optgrid = None
         self.mu0 = []
         self.linear_PFmodel_coeff = 0
 
@@ -108,7 +143,7 @@ class DER_Dispatch(DER_Dispatch_base):
         self._results = {}
         self._PV_last_values = {}
         self.simulation_id = simulation_id
-        self._message_count = 0
+        self.present_step = 0
         self._last_toggle_on = False
         self._open_diff = DifferenceBuilder(simulation_id)
         self._close_diff = DifferenceBuilder(simulation_id)
@@ -192,16 +227,26 @@ class DER_Dispatch(DER_Dispatch_base):
         ybus_config_request = {"configurationType": "YBus Export",
                                "parameters": {"simulation_id": 1659746927}}
         ybus_config_request['parameters']['simulation_id'] = str(self.simulation_id)
+        #{
+  # "configurationType":"YBus Export",
+  # "parameters":{"simulation_id":"678841139"}
+  # }
+  #       time.sleep(5)
 
         if self.fidselect != '_AAE94E4A-2465-6F5E-37B1-3E72183A4E44_XXXXXXXX':
-            ybus = self._gapps.get_response("goss.gridappsd.process.request.config", ybus_config_request, timeout=220)
+            'goss.gridappsd.process.request.config'
+            ybus = self._gapps.get_response("goss.gridappsd.process.request.config", ybus_config_request, timeout=240)
 
-            self.AllNodeNames = ybus['data']['nodeListFilePath']
+            self.AllNodeNames = ybus['data']['nodeList']
             self.AllNodeNames = [node.replace('"','') for node in self.AllNodeNames]
-            ybus_data = ybus['data']['yParseFilePath']
+            ybus_data = ybus['data']['yParse']
 
-        # self.ybus_setup()
-        # print(self.AllNodeNames)
+            # Old
+            # self.AllNodeNames = ybus['data']['nodeListFilePath']
+            # self.AllNodeNames = [node.replace('"','') for node in self.AllNodeNames]
+            # ybus_data = ybus['data']['yParseFilePath']
+
+
         _log.info("NodeNames")
         _log.info(self.AllNodeNames)
         self._send_simulation_status('STARTED', "NodeNames " + str(self.AllNodeNames)[:200], 'INFO')
@@ -232,46 +277,6 @@ class DER_Dispatch(DER_Dispatch_base):
             Ysparse_file = '/Users/jsimpson/git/adms/gridappsd-docker-upstream/DER-Dispatch-app/updated_glm2/173895120/base_ysparse.csv'
             _log.info("NodeNames")
             _log.info(self.AllNodeNames[:201])
-
-        self.use_dss_files = use_dss_files
-        if self.use_dss_files:
-            MasterFile = os.path.join(FeederDir, 'IEEE123Master_fixedVR.dss')
-            MasterFile = '/Users/jsimpson/git/adms/gridappsd-docker-upstream/DER-Dispatch-app/updated_glm2/1004031216/model_base.dss'
-            MasterFile = '/Users/jsimpson/git/adms/gridappsd-docker-upstream/DER-Dispatch-app/der_dispatch_app/IEEE123BusFinal/IEEE123Master_fixedVR.dss'
-
-            MasterFile = '/Users/jsimpson/git/adms/gridappsd-docker-upstream/DER-Dispatch-app/der_dispatch_app/IEEE123BusFinal/IEEE123Master_fixedVR_Reg.dss'
-            # MasterFile = '/Users/jsimpson/git/adms/gridappsd-docker-upstream/DER-Dispatch-app/updated_glm2/1075237928/model_base.dss'
-
-            dss.run_command('Compile ' + MasterFile)
-            self.circuit = dss.Circuit
-
-            self.AllNodeNames = self.circuit.YNodeOrder()
-            self.node_number = len(self.AllNodeNames)
-            Vbus = dss_function.get_Vcomplex_Yorder(self.circuit, self.node_number)
-            # ybus_data = Vbus
-            dss.run_command('export y triplet base_no_ysparse_adms.csv')
-            # print(self.AllNodeNames)
-
-            # Ysparse_file = os.path.join(FeederDir, 'base_no_ysparse_temp.csv')
-            # with open(Ysparse_file, 'w') as f:
-            #     for item in ybus_data:
-            #         f.write("%s\n" % item)
-
-            # dss.run_command('Compile ' + MasterFile)
-            # self.circuit = dss.Circuit
-
-            # ------- get Ymatrix file ------------
-            # dss.run_command('vsource.source.enabled=no')
-            # dss.run_command('solve')
-            # dss.run_command('show Y')
-
-            Ysparse_file = '/Users/jsimpson/git/adms/gridappsd-docker-upstream/DER-Dispatch-app/updated_glm2/1004031216/base_no_ysparse_adms.csv'
-            Ysparse_file = '/Users/jsimpson/git/adms/gridappsd-docker-upstream/DER-Dispatch-app/der_dispatch_app/IEEE123BusFinal/IEEE123_SystemY.txt'
-            Ysparse_file = '/Users/jsimpson/git/adms/gridappsd-docker-upstream/DER-Dispatch-app/der_dispatch_app/IEEE123BusFinal/base_no_ysparse_adms.csv'
-            # Ysparse_file = '/Users/jsimpson/git/adms/gridappsd-docker-upstream/DER-Dispatch-app/updated_glm2/1075237928/base_no_ysparse_adms.csv'
-
-
-
 
         # self.AllNodeNames = [str(node) for node in self.AllNodeNames]
         self.node_number = len(self.AllNodeNames)
@@ -315,78 +320,14 @@ class DER_Dispatch(DER_Dispatch_base):
         _log.info("Get Y matrix")
         [self.Y00, self.Y01, self.Y10, self.Y11_inv] = \
             ymatrix_function.construct_Ymatrix_amds_slack_sparse(Ysparse_file, self.slack_number, self.slack_start, self.slack_end, self.node_number)
-        if self.use_dss_files:
-            [self.Y00, self.Y01, self.Y10, self.Y11, Y11_sparse, self.Y11_inv] = ymatrix_function.construct_Ymatrix_amds(
-            Ysparse_file, self.slack_number, self.node_number)
-        _log.info(repr(self.Y00))
-        #   [self.Y00, self.Y01, self.Y10, self.Y11, Y11_sparse, self.Y11_inv] = dss_function.construct_Ymatrix(Ysparse_file, self.slack_number, self.node_number)
 
-        # print(self.Y00)
-        # print(self.Y01)
-        # print(self.Y10)
-        # print(self.Y11)
-        # self.V_vector_noLoad = y_helper_functions.construct_YVA(YVA_file, self.AllNodeNames)
+        _log.info(repr(self.Y00))
 
         self._send_simulation_status('STARTED', "Get Base Voltages", 'INFO')
 
         self.Vbase_allnode = ymatrix_function.get_base_voltages(self.AllNodeNames, self.fidselect)
         _log.info('Vbase_allnode')
         _log.info(self.Vbase_allnode[:500])
-
-        #    # check noload voltage value computed from linear model
-        #    [PQ_load, PQ_PV, PQ_node, Qcap] = dss_function.get_PQnode(dss, self.circuit, [], [], self.AllNodeNames,[])
-        #    V1_conj = np.conj(V_vector_noLoad[self.slack_number:])
-        #    V1_linear = np.dot(Y11_inv,np.matrix(np.multiply(1/V1_conj,np.conj(PQ_node[self.slack_number:]))).transpose()) - np.dot(Y11_inv,np.dot(self.Y10,np.matrix(V_vector_noLoad[:self.slack_number]).transpose()))
-        #    V1_linear = list(V1_linear)
-        #    Vdiff = list(map(lambda x: abs(x[0]-x[1])/abs(x[0])*100,zip(V_vector_noLoad[self.slack_number:],V1_linear)))
-        #    print(sum(Vdiff))
-        #    with open('voltage_diff.csv','w') as f:
-        #        csvwriter = csv.writer(f)
-        #        csvwriter.writerow(Vdiff)
-
-        # dss.run_command('redirect capacitor.dss')
-        # dss.run_command('redirect IEEE123Loads.dss')
-        # dss.run_command('redirect pvsystems_high.dss')
-        # # dss.run_command('redirect loadshape.dss')
-        # # dss.run_command('batchedit load..* yearly=loadshape_1sec')
-        # # if RTOPF_flag == 0:
-        # #    dss.run_command('BatchEdit Generator..* yearly=self.PVshape_1sec')
-        # # Read load and PV Profiles
-        # self.loadshape = []
-        # with open(os.path.join(FeederDir, 'Load_shape_1sec_intermittent.csv'), 'r') as f:
-        #     csvreader = csv.reader(f)
-        #     for row in csvreader:
-        #         self.loadshape.append(float(row[0]))
-        # f.close()
-        #
-        # self.PVshape = []
-        # with open(os.path.join(FeederDir, 'PVshape_intermittent.csv'), 'r') as f:
-        #     csvreader = csv.reader(f)
-        #     for row in csvreader:
-        #         self.PVshape.append(float(row[0]))
-        # f.close()
-        #
-        # dss.run_command('solve')
-        # # --------- get Load Information ----------
-        # [self.Load, totalLoadkW] = dss_function.get_loads(dss, self.circuit)
-        # # --------- get PV Information ------------
-        # self.PVSystem = dss_function.get_Generator(dss)
-        # self.NPV = len(self.PVSystem)
-        # PV_power_perStep = []
-        # self.nodeIndex_withPV = []
-        # self.PV_inverter_size = []
-        # print(self.AllNodeNames)
-        # for pv in self.PVSystem:
-        #     print(pv["bus"].upper())
-        #     self.circuit.SetActiveElement(pv["name"])
-        #     PV_power_perStep.append([-ii for ii in dss.CktElement.Powers()[0:2]])
-        #     self.nodeIndex_withPV.append(self.AllNodeNames.index(pv["bus"].upper()))
-        #     self.PV_inverter_size.append(float(pv['kVA']))
-        #
-        # print (self.nodeIndex_withPV)
-        # print (self.PV_inverter_size)
-
-        # self._sub_source = query_model.get_source(self.fidselect)
 
         self.result, self.name_map, self.node_name_map_va_power, self.node_name_map_pnv_voltage, \
         self.pec_map, self.load_power_map, self.line_map, self.trans_map, self.cap_pos, self.tap_pos,\
@@ -419,15 +360,6 @@ class DER_Dispatch(DER_Dispatch_base):
                                         'current_time': {'p': 0.0, 'q': 0.0},
                                         'polar': {'p': 0.0, 'q': 0.0}
                                         }
-                # self._PV_last_values[temp_fdrid[index]] = {'p': 0.0, 'q': 0.0}
-
-                # self.nodeIndex_withPV.append(index)
-                # self.PV_inverter_size.append(float(pv['kVA']))
-        # for i in sorted(temp_index_list):
-        #     index = temp_index_list.index(i)
-        #     self.nodeIndex_withPV.append(temp_index_list[index])
-        #     self.PV_inverter_size.append(temp_PV_inverter_size[index])
-        #     self.PV_fdrid.append(temp_fdrid[index])
 
         self._PV_dict = collections.OrderedDict(sorted(self._PV_dict.items()))
         self.NPV = len(self._PV_dict)
@@ -470,35 +402,6 @@ class DER_Dispatch(DER_Dispatch_base):
         _log.info("Get Capacitors")
         _log.info(self._capacitors)
 
-        if self._RTOPF_flag == 1:
-            # --------- get capacitor information ------------
-            # self.capacitors = dss_function.get_capacitors(dss)
-            # print (self.capacitors)
-
-            # _log.info("Get Capacitors")
-            # self._capacitors = query_model.get_capacitors(self.fidselect)
-            # _log.info(self._capacitors)
-            # print(self._capacitors)
-
-            # ************* check the correctness of Ybus: Ibus=Ybus*Vbus *************
-            # ************* check whether linear model is correct or not **************
-            # get Vbus
-            # nodename = self.circuit.YNodeOrder()
-            # Vbus = dss_function.get_Vcomplex_Yorder(self.circuit, self.node_number)
-            # V1 = dss_function.re_orgnaize_for_volt(Vbus, self.AllNodeNames, self.AllNodeNames)
-
-            sample_input = {}
-
-            # nodename = self.circuit.YNodeOrder()
-            # Vbus = y_helper_functions.get_Vbus(self.fidselect, nodename, sample_input)
-            # Vbus_reorg = dss_function.re_orgnaize_for_volt(Vbus, self.AllNodeNames, nodename)
-
-            # TODO replace this get PQ from paltform
-            # _log.info("Get Base Voltages")
-            # self.Vbase_allnode = y_helper_functions.get_base_voltages(self.AllNodeNames, self.fidselect)
-
-        # ************************************* Finish System Preparation *************************************
-
         # --- Initialize the files to write results
         # circuit_name = "ieee123" # self.circuit.Name()
         circuit_name = query_model.get_feeder_name(self.fidselect)
@@ -521,9 +424,9 @@ class DER_Dispatch(DER_Dispatch_base):
             _log.info("self.opf_off_folder")
             _log.info(self.opf_off_folder)
             self.PVoutput_P_df = pd.read_csv(os.path.join(self.opf_off_folder, "PVoutput_P.csv"), index_col='epoch time')
-            self.PVoutput_P_df.index = pd.to_datetime(self.PVoutput_P_df.index, unit='s')
+            # self.PVoutput_P_df.index = pd.to_datetime(self.PVoutput_P_df.index, unit='s')
             self.results_0_df = pd.read_csv(os.path.join(self.opf_off_folder, "result.csv"), index_col='epoch time')
-            self.results_0_df.index = pd.to_datetime(self.results_0_df.index, unit='s')
+            # self.results_0_df.index = pd.to_datetime(self.results_0_df.index, unit='s')
 
         if os.path.exists(self.resFolder):
             try:
@@ -581,27 +484,14 @@ class DER_Dispatch(DER_Dispatch_base):
 
         # Define control parameters
         self.control_bus = np.concatenate((self.AllNodeNames[:self.slack_start], self.AllNodeNames[self.slack_end+1:]))
-        if self.use_dss_files:
-            self.control_bus = self.AllNodeNames[self.slack_number:]
         self.control_bus_index = [self.all_node_index[ii] for ii in self.control_bus]
-        # self.Vlower = 0.955
-        # self.Vupper = 1.045
-        # self.coeff_p = 0.00001
-        # self.coeff_q = 0.00001
-        # self.stepsize_xp = 2
-        # self.stepsize_xq = 2
-        # self.stepsize_mu = 50
-        # self.max_iter = 2000
-        # self.threshold = 0.0001
-        # self.mu_Vmag_upper0 = np.zeros(len(self.control_bus))
-        # self.mu_Vmag_lower0 = np.zeros(len(self.control_bus))
-        # Read Baseline PV Outputs as Forecasted Power
-        # self.PV_Pmax = []
 
         if not self._run_realtime:
             self._send_resume()
             _log.info("Resuming after setup")
 
+    def running(self):
+        return self._is_running
 
     def signal_handler(self, signal, frame):
         """
@@ -617,6 +507,7 @@ class DER_Dispatch(DER_Dispatch_base):
         self._PV_Q_csvfile.close()
         self._skt.close()
         self.save_plots()
+        self._is_running = False
         sys.exit(0)
 
     def on_message(self, headers, message):
@@ -634,24 +525,25 @@ class DER_Dispatch(DER_Dispatch_base):
         # Check if we are getting messages
         # _log.info(message)
 
-        # if not self._run_realtime:
-        #     self._send_pause()
-        #     _log.info("Pausing to work")
-
         # print(headers['destination'])
-        print(message[:100])
-        if headers['destination'] == '/topic/goss.gridappsd.remoteapp.stop.der_dispatch_app':
-            self.signal_handler(None,None)
-
-        self._send_simulation_status('STARTED', "Rec message " + message[:100], 'INFO')
+        # print(message[:100])
         if message == '{}':
             return
+        if headers['destination'].startswith('/topic/goss.gridappsd.simulation.log.'+str(self.simulation_id)):
+            message = json.loads(message)
+            if message['processStatus'] == "COMPLETE":
+                print(message)
+                self.signal_handler(None, None)
+            return
+        # print(message[:100])
+
+        self._send_simulation_status('STARTED', "Rec message " + message[:100], 'INFO')
 
        # {'simulation_id': '927687385', 'message': {'timestamp': 1374510962, 'measurements': []}}
         message = json.loads(message)
         if self.timestamp_ == message['message']['timestamp']:
-            print("Measurements is duplicate")
-            _log.info("Measurements is duplicate")
+            # print("Measurements is duplicate")
+            # _log.info("Measurements is duplicate")
             return
 
         self.timestamp_ = message['message']['timestamp']
@@ -668,7 +560,8 @@ class DER_Dispatch(DER_Dispatch_base):
                 self._send_pause()
                 _log.info("Pausing to work")
 
-        meas_map = query_model.get_meas_map(message)
+        meas_map = message['message']['measurements']
+        # meas_map = query_model.get_meas_map(message)
 
         print("Get Tap Pos")
         taps = query_model.get_pos(meas_map, self.tap_pos)
@@ -684,8 +577,8 @@ class DER_Dispatch(DER_Dispatch_base):
         _log.info(repr(PQ_load[:self.MAX_LOG_LENGTH]))
 
         # Maybe find a different way ...
-        # total_pq = self.get_demand(self.AllNodeNames, self._load_dict, self.load_power_map, self.load_voltage_map, meas_map)
-        total_pq = 0.0
+        total_pq = self.get_demand(self.AllNodeNames, self._load_dict, self.load_power_map, self.load_voltage_map, meas_map)
+        # total_pq = 0.0
 
 
         # print('PQ_load')
@@ -708,20 +601,30 @@ class DER_Dispatch(DER_Dispatch_base):
         _log.info(V_node[:self.MAX_LOG_LENGTH])
         for index, v1 in enumerate(V_node):
             if v1.real == 0:
-                V_node[index] = complex(2424.0, 0.)
+                # V_node[index] = complex(2424.0, 0.)
+                V_node[index] = complex(self.Vbase_allnode[index], 0.)
                 _log.info("Zero value for " + self.AllNodeNames[index])
+                self._send_simulation_status('RUNNING', "Zero value for node " + self.AllNodeNames[index], 'WARN')
         # V_node = np.concatenate((V_node[:self.slack_start], V_node[self.slack_end+1:]))
 
         ## Test
         if "_006a5104-0576-496c-be3d-796fa407b974" in meas_map:
             print("PV meas " + str(meas_map["_006a5104-0576-496c-be3d-796fa407b974"]))
+        if "_a13724e1-ddc4-4354-a8f9-d731ff110ebd" not in meas_map:
+            print("No meas for " + "_a13724e1-ddc4-4354-a8f9-d731ff110ebd")
+        else:
+            print("Found meas for " + str(meas_map["_a13724e1-ddc4-4354-a8f9-d731ff110ebd"]))
         Ppv, Qpv, pv_mrids = query_model.get_pv_PQ(self._PV_dict, self.AllNodeNames, meas_map, self.pec_map, convert_to_radian=True)
-
+        # print(repr(self.pec_map))
         # for pv_index in self.nodeIndex_withPV:
         #     PVmax.append(Ppv[pv_index] * -vmult)
         #     # pv_names.append(self.AllNodeNames[pv_index])
         #     temp_Qpv.append(Qpv[pv_index] * -vmult)
-        ghi, solar_diff = self.get_ghi(self.timestamp_ - 30)
+        t = datetime.utcfromtimestamp(self.timestamp_)
+        adjusted_time = int(t.replace(year=2013).replace(tzinfo=timezone.utc).timestamp())
+        ghi, solar_diff = self.get_ghi(adjusted_time - 30)
+        # ghi, solar_diff = self.get_ghi(self.timestamp_ - 30)
+
         solar_pct = (ghi + solar_diff) / 100.
         magic_pct = .985
         magic_pct = 1.00096244
@@ -734,30 +637,36 @@ class DER_Dispatch(DER_Dispatch_base):
         PVmax = [solar_pct * v['size'] for k, v in self._PV_dict.items()]
 
         if self._RTOPF_flag == 1:
-            # get ghi from OPF=0
-            # _log.info("self.opf_off_folder")
-            # _log.info(self.opf_off_folder)
-            # PVoutput_P_df = pd.read_csv(os.path.join(self.opf_off_folder, "PVoutput_P.csv"), index_col='epoch time')
-            # PVoutput_P_df.index = pd.to_datetime(PVoutput_P_df.index, unit='s')
-            temp_df = self.PVoutput_P_df.iloc[self.PVoutput_P_df.index.get_loc(self.timestamp_, method='nearest')]
+            df_index = self.PVoutput_P_df.index.get_loc(self.timestamp_, method='nearest')
+            temp_df = self.PVoutput_P_df.iloc[df_index]
             PVmax_opf_0 = [-v for k, v in temp_df.items()]
-            # print('PVMax')
-            # print(PVmax)
-            # print(PVmax_opf_0)
-
             PVmax = PVmax_opf_0
-            _log.info("PVmax")
-            _log.info(PVmax)
-            # _log.info(Ppv)
+            _log.info("PVmax at " + str(self.timestamp_))
+
+        ## Check for zero pv p
+        current_pv = [v['current_time']['p'] for k, v in self._PV_dict.items()]
+        PVname = np.array([v['name'] for k, v in self._PV_dict.items()])
+        pv_zero_mask = np.array(current_pv) == 0
+        if pv_zero_mask.sum() > 0:
+            print('Check pv zero')
+            print(repr(PVmax))
+            print(repr(pv_zero_mask))
+            PVmax = np.array(PVmax)
+            PVmax[pv_zero_mask] = 0
+            print(repr(PVmax))
+            PVmax = PVmax.tolist()
+            pct_pv_off = pv_zero_mask.sum() / len(PVmax)
+            if pv_zero_mask.sum() > 0:
+                _log.info('These PV are unavailable ' + repr(PVname[pv_zero_mask]))
+            if pct_pv_off < .20:
+                # _log.info('The percentage of pv that are unavailable ' + str(pv_zero_mask.sum()) + '/' + len(PVmax) + '=' + pct_pv_off)
+                _log.info('The percentage of pv that are unavailable {}/{}={}'.format(pv_zero_mask.sum(),len(PVmax), pct_pv_off))
+
 
         self.validate_pv_setpoints(self.timestamp_)
-
         self.res = {}
-
         self.res['PV_Poutput'] = np.array([pv[1]['current_time']['p'] * self._vmult for pv in self._PV_dict.items()])
         self.res['PV_Qoutput'] = np.array([pv[1]['current_time']['q'] * self._vmult for pv in self._PV_dict.items()])
-
-
         if self.NPV > 0:
             temp_pv_dict = dict(islice(self._PV_dict.items(), self.MAX_LOG_LENGTH))
             pv_df = pd.DataFrame(temp_pv_dict)
@@ -769,23 +678,18 @@ class DER_Dispatch(DER_Dispatch_base):
             print("No PVs!")
             _log.info("No PVs!")
 
-        # if (timestamp-2) % self._run_freq != 0:
-        #     if not self._run_realtime:
-        #         self._send_resume()
-        #         _log.info("Resuming to work")
-        #     print('Time on the time check. ' + str(timestamp))
-        #     return
+        # V1_withoutOPF_pu = np.array(list(map(lambda x: abs(x[0]) / x[1], zip(V_node, self.Vbase_allnode))))
+        # print('Test V1_withoutOPF_pu')
+        # print(np.allclose(V1_withoutOPF_pu, abs(np.array(V_node)) / np.array(self.Vbase_allnode)))
+        V1_withoutOPF_pu = abs(np.array(V_node)) / np.array(self.Vbase_allnode)
+        self.vn.writerow(V1_withoutOPF_pu.tolist())
 
-        # self.capacitors = query_model.get_capacitors(self.fidselect)
-        # Qcap = query_model.get_cap_PQ(self._capacitors, self.AllNodeNames, meas_map, self.node_name_map_va_power)
-        # print(Qcap)
-        # _log.info('Qcap')
-        # _log.info(Qcap)
-        #[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 197.73115373225028, 214.40731243265355, 218.24596697650267, 0, 0, 0, 0, 52.97363883595899, 0, 0, 0, 53.97518842383129, 0, 0, 0, 48.85418579307232, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-
-
-        V1_withoutOPF_pu = list(map(lambda x: abs(x[0]) / x[1], zip(V_node, self.Vbase_allnode)))
-        self.vn.writerow(V1_withoutOPF_pu)
+        # v_violation_mask = list(vv < 0.95 or vv > 1.05 for vv in V1_withoutOPF_pu)
+        v_violation_mask = (V1_withoutOPF_pu < 0.95) | (V1_withoutOPF_pu > 1.05)
+        violators = list(zip(np.array(self.AllNodeNames)[v_violation_mask], np.array(V_node)[v_violation_mask],
+                 self.Vbase_allnode[v_violation_mask],V1_withoutOPF_pu[v_violation_mask]))
+        _log.info('violators ')
+        _log.info(repr(violators))
 
         # self.save_results(self.present_step)
         self._results['second'] = self.present_step
@@ -818,15 +722,21 @@ class DER_Dispatch(DER_Dispatch_base):
         #             print("Figure out how to do this with transformer ends.")
         _log.info("Jeff 1")
         source_total = complex(0, 0)
-        for node_name in self._source_node_names :
-            if node_name in self.line_map:
-                term = self.line_map[node_name][0]
-                source_total += complex(meas_map[term][u'magnitude'], meas_map[term][u'angle'])
-            elif node_name in self.trans_map:
-                term = self.trans_map[node_name]
-                source_total += complex(meas_map[term][u'magnitude'], meas_map[term][u'angle'])
-            else:
-                print("Figure out how to do this with transformer ends.")
+        # TODO make function
+        # for node_name in self._source_node_names:
+        #     if node_name in self.line_map:
+        #         term = self.line_map[node_name][0]
+        #         source_total += complex(meas_map[term][u'magnitude'], meas_map[term][u'angle'])
+        #     elif node_name in self.trans_map:
+        #         term = self.trans_map[node_name]
+        #         temp_source_meas = complex(*query_model.pol2cart(meas_map[term]['magnitude'], meas_map[term]['angle']))
+        #         source_total += temp_source_meas
+        #         # source_total += complex(meas_map[term][u'magnitude'], meas_map[term][u'angle'])
+        #         print(node_name, temp_source_meas)
+        #     else:
+        #         print("Figure out how to do this with transformer ends.")
+        # source_total /= 1000000.
+
         _log.info("Jeff 2")
         # self._results['Load Demand (MW)'] = sum(PQ_load).real * vmult * vmult
         # self._results['Load Demand (MVAr)'] = sum(PQ_load).imag * vmult * vmult
@@ -844,59 +754,19 @@ class DER_Dispatch(DER_Dispatch_base):
 
         self._PV_P_writer.writerow(np.insert(self.res['PV_Poutput'], 0, self.timestamp_))
         self._PV_Q_writer.writerow(np.insert(self.res['PV_Qoutput'], 0, self.timestamp_))
-        obj = {}
+
         _log.info("Jeff 2")
         # temp_dict = dict()
         # temp_dict[u'GHI'] = {'data': ghi_obs, 'time': epoch_time}
         # temp_dict[u'Forecast GHI'] = {'data': final_, 'time': epoch_time + (60 * 30)}
-        opf_0_PV_MW = 0.0
-        opf_0_PV_MVAR = 0.0
+        result0_df = defaultdict(float)
         if self._RTOPF_flag == 1:
-            # self.results_0_df = pd.read_csv(os.path.join(self.opf_off_folder, "result.csv"), index_col='epoch time')
-            # self.results_0_df .index = pd.to_datetime(self.results_0_df .index, unit='s')
             result0_df = self.results_0_df .iloc[self.results_0_df .index.get_loc(self.timestamp_, method='nearest')]
-            opf_0_PV_MW = result0_df['PVGeneration(MW)']
-            opf_0_PV_MVAR = result0_df['PVGeneration(MVAr)']
+
         plot_time = datetime.fromtimestamp(self.timestamp_, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
         plot_time = self.timestamp_
-        temp_dict = {}
-        temp_dict[u'Load Demand (MW)'] = {'data': self._results['Load Demand (MW)'], 'time': plot_time }
-        obj[u'Load Demand (MW)'] = temp_dict
 
-        temp_dict = {}
-        temp_dict[u'PVGeneration(MW)'] = {'data': self._results['PVGeneration(MW)'], 'time': plot_time }
-        temp_dict[u'PVGeneration(MW) OPF=0'] = {'data': opf_0_PV_MW, 'time': plot_time }
-        obj[u'PVGeneration(MW)'] = temp_dict
-
-        temp_dict = {}
-        temp_dict[u'PVGeneration(MVAr)'] = {'data': self._results['PVGeneration(MVAr)'], 'time': plot_time}
-        temp_dict[u'PVGeneration(MVAr) OPF=0'] = {'data': opf_0_PV_MVAR, 'time': plot_time}
-        obj[u'PVGeneration(MVar)'] = temp_dict
-
-        temp_pv_dict = dict(islice(self._PV_dict.items(), self.MAX_LOG_LENGTH))
-        temp_dict = {pv[1]['name']:{'data': pv[1]['current_time']['p'] * self._vmult, 'time': plot_time} for pv in temp_pv_dict.items()}
-        obj[u'Power P (KW)'] = temp_dict
-
-        # temp_dict = {}
-        # temp_dict[u'Load Demand (MW)'] = self._results['Load Demand (MW)']
-        # temp_dict[u'time'] = self.present_step
-        # obj[u'Load Demand (MW)'] = temp_dict
-        #
-        # temp_dict = {}
-        # temp_dict[u'PVGeneration(MW)'] = self._results['PVGeneration(MW)']
-        # temp_dict[u'time'] = self.present_step
-        # obj[u'PVGeneration(MW)'] = temp_dict
-        #
-        # temp_dict = {pv[1]['name']: pv[1]['current_time']['p'] * vmult for pv in self._PV_dict.items()}
-        # temp_dict[u'time'] = self.present_step
-        # obj[u'Power P (KW)'] = temp_dict
-
-        # pobj = pickle.dumps(obj, 0)
-        # zobj = zlib.compress(pobj)
-        jobj = json.dumps(obj).encode('utf8')
-        zobj = zlib.compress(jobj)
-        print('zipped pickle is %i bytes' % len(zobj))
-        self._skt.send(zobj)
+        self.send_plots(ghi, plot_time, result0_df, solar_diff, source_total)
 
         print('**************** time step= ' + str(self.present_step) + ' : ' + str(
             self.timestamp_) + '***************')
@@ -905,6 +775,51 @@ class DER_Dispatch(DER_Dispatch_base):
         if not self._run_realtime:
             self._send_resume()
             _log.info("Resuming to work")
+
+    def send_plots(self, ghi, plot_time, result0_df, solar_diff, source_total):
+        obj = {}
+        temp_dict = {}
+        temp_dict[u'Load Demand (MW)'] = {'data': self._results['Load Demand (MW)'], 'time': plot_time}
+        temp_dict[u'Sub Station (MW)'] = {'data': source_total.real, 'time': plot_time}
+        obj[u'Load Demand (MW)'] = temp_dict
+        temp_dict = {}
+        temp_dict[u'Vmax'] = {'data': self._results['Vmax (p.u.)'], 'time': plot_time}
+        temp_dict[u'Vmax OPF=0'] = {'data': result0_df['Vmax (p.u.)'], 'time': plot_time}
+        temp_dict[u'Vavg'] = {'data': self._results['Vavg (p.u.)'], 'time': plot_time}
+        temp_dict[u'Vavg OPF=0'] = {'data': result0_df['Vavg (p.u.)'], 'time': plot_time}
+        temp_dict[u'Vmin'] = {'data': self._results['Vmin (p.u.)'], 'time': plot_time}
+        temp_dict[u'Vmin OPF=0'] = {'data': result0_df['Vmin (p.u.)'], 'time': plot_time}
+        obj[u'Voltages P.U.'] = temp_dict
+        temp_dict = {}
+        temp_dict[u'PVGeneration(MW)'] = {'data': self._results['PVGeneration(MW)'], 'time': plot_time}
+        temp_dict[u'PVGeneration(MW) OPF=0'] = {'data': result0_df['PVGeneration(MW)'], 'time': plot_time}
+        obj[u'PVGeneration(MW)'] = temp_dict
+        temp_dict = {}
+        temp_dict[u'PVGeneration(MVAr)'] = {'data': self._results['PVGeneration(MVAr)'], 'time': plot_time}
+        temp_dict[u'PVGeneration(MVAr) OPF=0'] = {'data': result0_df['PVGeneration(MVAr)'], 'time': plot_time}
+        obj[u'PVGeneration(MVar)'] = temp_dict
+        temp_dict = {}
+        temp_dict[u'DirectCH1'] = {'data': ghi, 'time': plot_time}
+        temp_dict[u'Diffuse'] = {'data': solar_diff, 'time': plot_time}
+        obj[u'Weather'] = temp_dict
+        # print(repr(temp_dict))
+        plot_range = len(self._PV_dict.items())
+        if plot_range > 60:
+            plot_range = 60
+        for count, i in enumerate(range(0, plot_range, self.MAX_LOG_LENGTH)):
+            last = i
+            temp_pv_dict = dict(islice(self._PV_dict.items(), last, i+self.MAX_LOG_LENGTH))
+            temp_dict_pv_p = {pv[1]['name']: {'data': pv[1]['current_time']['p'] * self._vmult, 'time': plot_time} for pv in
+                         temp_pv_dict.items()}
+            obj[u'Power P (KW) ' + str(count)] = temp_dict_pv_p
+            temp_dict_pv_q = {pv[1]['name']: {'data': pv[1]['current_time']['q'] * self._vmult, 'time': plot_time} for pv in
+                         temp_pv_dict.items()}
+            obj[u'Power P (KVar) ' + str(count)] = temp_dict_pv_q
+
+        jobj = json.dumps(obj).encode('utf8')
+        zobj = zlib.compress(jobj)
+        print('zipped pickle is %i bytes' % len(zobj))
+        self._skt.send(zobj)
 
     def validate_pv_setpoints(self, timestamp):
         if self._check_pv_control_flag:
@@ -934,6 +849,8 @@ class DER_Dispatch(DER_Dispatch_base):
     def get_ghi(self, current_sim_time):
         # TODO get current GHI from platform
         current_sim_time = current_sim_time
+        if self._weather_df is None:
+            return 0.,0.
         temp_df = self._weather_df.iloc[self._weather_df.index.get_loc(current_sim_time, method='nearest')]
         # ghi = .662493
         # ghi = 0.9472
@@ -971,6 +888,9 @@ class DER_Dispatch(DER_Dispatch_base):
                 index = nodenames.index(name)
                 load = load_name_dict[index]
                 phase_name = load['phase']
+                # temp_voltage = meas_map[mrid[1]]
+                # print("Demand voltage")
+                # print(mrid[0], temp_voltage, phase_name)
                 if 's' not in phase_name:
                     # print(load['constant_currents'])
                     constant_current = complex(load['constant_currents'][phase_name])
@@ -983,6 +903,10 @@ class DER_Dispatch(DER_Dispatch_base):
                     load_results[mrid[0]] = {'name': mrid[0], 'mrid': mrid[1], 'power': p}
                     # print(mrid[0] + " " + mrid[1] + " " + str(meas_map[mrid[1]]) + " " + str(constant_current) + " " + str(p))
                     total_pq += p
+                else:
+                    temp_voltage = meas_map[mrid[1]]
+                    temp_voltage_cart = complex(*query_model.pol2cart(temp_voltage['magnitude'], temp_voltage['angle']))
+                    load_results[mrid[0]]['voltage'] = temp_voltage_cart
 
         pv_df = pd.DataFrame(load_results)
         _log.info(tabulate(dict(islice(pv_df.items(), self.MAX_LOG_LENGTH)), headers='keys', tablefmt='psql'))
@@ -1028,58 +952,54 @@ class DER_Dispatch(DER_Dispatch_base):
 
 
             # v1_pu = list(map(lambda x: abs(x[0]) / x[1], zip(V1, self.Vbase_allnode)))
-            if self.sim_start == 0:
+            if self.sim_start == 0:  # TODO or if topo change
                 # (Y00, Y01, Y10, Y11_inv, V1, slack_number)
+
                 self.linear_PFmodel_coeff = opt_function.linear_powerflow_model_slack_sparse_1(self.Y00, self.Y01, self.Y10, self.Y11_inv, V1,
                                                                         self.slack_number, self.slack_start, self.slack_end)
-                _log.info("Jeff OPF 1 - 1")
+                # np.savez_compressed('Y_matrix', Y00=self.Y00, Y01=self.Y01, Y10=self.Y10, Y11_inv=self.Y11_inv, V1=V1,
+                #                     slack_number=self.slack_number, slack_start=self.slack_start, slack_end=self.slack_end)
+                _log.info("OPF 1 linear_powerflow_model_slack_sparse_1")
 
                 # [coeff_V, coeff_Vm, coeff_Vmag_P, coeff_Vmag_Q, coeff_Vmag_k, coeff_sub_p, coeff_sub_q,
                 #  coeff_sub_g] = opt_function.linear_voltage_model_slack(self.Y00, self.Y01, self.Y10, self.Y11_inv, [], V1,
                 #                                                         self.slack_number, self.slack_start, self.slack_end)
-                _log.info("Jeff OPF 1 - 2")
 
                 self.mu0 = []
                 self.mu0.append(np.zeros(len(self.AllNodeNames)-self.slack_number))
                 self.mu0.append(np.zeros(len(self.AllNodeNames)-self.slack_number))
+
+                _log.info("Jeff OPF 2")
+                PVname = []
+                PVlocation = []
+                PVsize = []
+                invertersize = []
+                for pv in self._PV_dict.values():
+                    PVname.append(pv['name'])
+                    PVlocation.append(pv['busname'])
+                    # PVsize.append(float(pv['kW']))
+                    # invertersize.append(float(pv['kVA']))
+                    PVsize.append(float(pv['size'])) # TODO check
+                    invertersize.append(float(pv['size']))
+                _log.info("Jeff OPF 3")
+                # print('invertersize')
+                # print(invertersize)
+                #
+                #
+                # print('control_bus_index')
+                # print(self.control_bus_index)
+                # print('self.nodeIndex_withPV')
+                # print(self.nodeIndex_withPV)
+                np.savez_compressed('optgrid', PVname=PVname, PVlocation=PVlocation,
+                                    PVsize=PVsize, invertersize=invertersize, control_bus_index=self.control_bus_index
+                                    , nodeIndex_withPV= self.nodeIndex_withPV)
+                self._optgrid = RTOPF(PVname, PVlocation, PVsize, invertersize, 'controlBus',  self.control_bus_index, self.nodeIndex_withPV)
+                coeff_PF = self._optgrid.system_topology_identifier(self.linear_PFmodel_coeff)
+                _log.info("Jeff OPF 4")
+
                 self.sim_start = 1
                 return
 
-            _log.info("Jeff OPF 2")
-            PVname = []
-            PVlocation = []
-            PVsize = []
-            invertersize = []
-            for pv in self._PV_dict.values():
-                PVname.append(pv['name'])
-                PVlocation.append(pv['busname'])
-                # PVsize.append(float(pv['kW']))
-                # invertersize.append(float(pv['kVA']))
-                PVsize.append(float(pv['size'])) # TODO check
-                invertersize.append(float(pv['size']))
-            _log.info("Jeff OPF 3")
-            # print('invertersize')
-            # print(invertersize)
-            #
-            #
-            # print('control_bus_index')
-            # print(self.control_bus_index)
-            # print('self.nodeIndex_withPV')
-            # print(self.nodeIndex_withPV)
-
-            optgrid = RTOPF(PVname, PVlocation, PVsize, invertersize, 'controlBus',  self.control_bus_index, self.nodeIndex_withPV)
-            coeff_PF = optgrid.system_topology_identifier(self.linear_PFmodel_coeff)
-            _log.info("Jeff OPF 4")
-
-            if self.use_dss_files :
-                [coeff_V, coeff_Vm, coeff_Vmag_P, coeff_Vmag_Q, coeff_Vmag_k, coeff_sub_p, coeff_sub_q,
-                 coeff_sub_g] = opt_function.linear_voltage_model(self.Y00, self.Y01, self.Y10, self.Y11_inv, [], V1,
-                                                                  self.slack_number)
-                [coeff_V, coeff_Vm, coeff_Vmag_P, coeff_Vmag_Q, coeff_Vmag_k, coeff_sub_p, coeff_sub_q,
-                 coeff_sub_g] = opt_function.linear_voltage_model_slack(self.Y00, self.Y01, self.Y10, self.Y11_inv, [],
-                                                                        V1,
-                                                                        self.slack_number, 0,
-                                                                        2)
 
             # ------ apply the setpoint ------
             PVpower = []
@@ -1093,23 +1013,18 @@ class DER_Dispatch(DER_Dispatch_base):
             # print(PVmax)
             # Vmes = np.concatenate((Vbus[:self.slack_start], Vbus[self.slack_end + 1:]))
             Vmes = np.concatenate((V1_withoutOPF_pu[:self.slack_start], V1_withoutOPF_pu[self.slack_end + 1:]))
-            # np.savez_compressed('Vmes_123', Vmes=Vmes)
-            # exit(0)
-            [mu1, self.linear_PFmodel_coeff] = optgrid.coordinator(self.mu0, Vmes, self.linear_PFmodel_coeff,  self._app_config)
-            x1 = optgrid.DER_optimizer(self.linear_PFmodel_coeff, mu1, PVpower, PVmax, self.slack_start, self.slack_number, self._app_config)
-            self.mu0 = mu1
+
+            for i in range(self._optimizer_num_iterations):
+                [mu1, self.linear_PFmodel_coeff] = self._optgrid.coordinator(self.mu0, Vmes, self.linear_PFmodel_coeff, self._app_config)
+                # np.savez_compressed('coordinator_args', mu0=self.mu0, Vmes=Vmes, PVpower=PVpower, PVmax=PVmax)
+                x1, results = self._optgrid.DER_optimizer(self.linear_PFmodel_coeff, mu1, PVpower, PVmax, self.slack_start, self.slack_number, self._app_config)
+                _log.info(results)
+                self.mu0 = mu1
 
             # Need matching order MRIDs of PVS
             pv_totals = defaultdict(lambda: {'total_p': 0, 'total_q': 0, 'total_last_p': 0, 'total_last_q': 0})
             self._check_pv_control_flag = True
             for count, pv in enumerate(self._PV_dict.values()):
-                # print("Set forward diff " + pv['name'] + ' ' + pv['id'] + ' p=' + str(x1[count]) + ' q=' + str(x1[count + self.NPV]))
-                # self._open_diff.add_difference(cap_mrid, "ShuntCompensator.sections", 0, 1)
-                # c:PowerElectronicsConnection.ratedS ?ratedS.
-                # c:PowerElectronicsConnection.ratedU ?ratedU.
-                # c:PowerElectronicsConnection.maxIFault ?ipu.
-                # c:PowerElectronicsConnection.p ?p.
-                # c:PowerElectronicsConnection.q ?q.
                 p = x1[count]  # KW
                 q = x1[count + self.NPV]  # kvar
                 # last_p = pv['last_time']['p']
@@ -1128,15 +1043,49 @@ class DER_Dispatch(DER_Dispatch_base):
                 pv_totals[pv['id']]['total_last_p'] += last_p
                 pv_totals[pv['id']]['total_last_q'] += last_q
             inverter_diff = DifferenceBuilder(self.simulation_id)
+
+            # dg_42 = '_2B5D7749-6C18-D77E-B848-3F4C31ADC3E6'
+            # dg_42 = '_88B39F80-3BE8-2BFC-50BA-4D75604810D2'
+            # # edit Generator.dg_42 kW=144.37569 kvar=-7.89116
+            # p, q = 144.37569 * -1000., -7.89116 * -1000.
+            # print('dg_42 ' + str(p) + ' ' + str(q))
+            # p, q = query_model.cart2pol(p, q)
+            # print('dg_42 ' + str(p) + ' ' + str(q))
+            # inverter_diff.add_difference(dg_42, "PowerElectronicsConnection.p", p, p)
+            # inverter_diff.add_difference(dg_42, "PowerElectronicsConnection.q", q, q)
+
+            # object inverter {
+            #   name "inv_pv_dg_42";
+            #   parent "55_pvmtr";
+            #   phases AN;
+            #   generator_status ONLINE;
+            #   four_quadrant_control_mode CONSTANT_PQ;
+            #   inverter_type FOUR_QUADRANT;
+            #   inverter_efficiency 1.0;
+            #   power_factor 1.0;
+            #   V_base 2400.000;
+            #   rated_power 150000.000;
+            #   P_Out 150000.000;
+            #   Q_Out 0.000;
+            #   object solar {
+            #     name "pv_dg_42";
+            #     generator_mode SUPPLY_DRIVEN;
+            #     generator_status ONLINE;
+            #     panel_type SINGLE_CRYSTAL_SILICON;
+            #     efficiency 0.2;
+            #     rated_power 150000.000;
+            #   };
+            # }
             for pv_id, pv in pv_totals.items():
+                print("Set forward diff " + pv['name'] + ' ' + pv_id + ' p=' + str(pv['total_p']) + ' q=' + str(pv['total_q']))
                 p = pv['total_p'] * -1000.
                 q = pv['total_q'] * -1000.
                 self._PV_setpoints['timestamp'] = timestamp
                 self._PV_setpoints[pv_id] = {'p': p, 'q': q}
                 # print(self._PV_setpoints)
-                p, q = query_model.cart2pol(p, q)
-                # p*=-1
-                # q*=-1
+                # p, q = query_model.cart2pol(p, q)
+                p *= -1
+                q *= -1
                 _log.info("Set forward diff " + pv['name'] + ' ' + pv_id + ' p=' + str(p) + ' q=' + str(q))
 
                 last_p = pv['polar']['p']
@@ -1146,10 +1095,11 @@ class DER_Dispatch(DER_Dispatch_base):
 
                 # print(pv['name'] + '.p ' + str(p) + ' ' + str(last_p) + ' diff ' + str((p - last_p)))
                 # print(pv['name'] + '.q ' + str(q) + ' ' + str(last_q) + ' diff ' + str((q - last_q)))
-                inverter_diff.add_difference(pv_id, "PowerElectronicsConnection.p", p, last_p*1)
-                inverter_diff.add_difference(pv_id, "PowerElectronicsConnection.q", q, last_q*1)
+                inverter_diff.add_difference(pv_id, "PowerElectronicsConnection.p", p, last_p)
+                inverter_diff.add_difference(pv_id, "PowerElectronicsConnection.q", q, last_q)
 
-            msg = self.get_message(inverter_diff)
+            msg = inverter_diff.get_message()
+            # msg = self.get_message(inverter_diff)
             # msg = inverter_diff.get_message()
             # print (msg)
             _log.info("Send PV diff msg")
@@ -1172,10 +1122,12 @@ class DER_Dispatch(DER_Dispatch_base):
         Save plots for comparison. Need to have OPF off run first and the OPF on for comparison.
         :return:
         """
+        print("Saving plots to " + self.resFolder)
         results0 = pd.read_csv(os.path.join(self.opf_off_folder, "result.csv"), index_col='epoch time')
         results0.index = pd.to_datetime(results0.index, unit='s')
         if not os.path.exists(self.opf_off_folder):
             print('No unoptimized results to compare with')
+            _log.info('No unoptimized results to compare with')
             return
         results1 = pd.read_csv(os.path.join(self.resFolder, "result.csv"), index_col='epoch time')
         results1.index = pd.to_datetime(results1.index, unit='s')
@@ -1195,20 +1147,30 @@ class DER_Dispatch(DER_Dispatch_base):
 
         fig, ax = plt.subplots(figsize=size)
         plt.grid(True)
-        ax.plot(results1[[u'solar_pct']] * 3320.0 * -1)
+        # ax.plot(results1[[u'solar_pct']] * 3320.0 * -1)
         ax.plot(results0[[u'PVGeneration(MW)']])
         ax.plot(results1[[u'PVGeneration(MW)']])
-        ax.legend(['solar_pct * 3320.0', 'PV MW OPF=0', 'PV MW OPF=1'])
+        ax.legend(['PV MW OPF=0', 'PV MW OPF=1'])
 
         # plt.show()
         fig.savefig(os.path.join(self.resFolder, "PV_Generation_MW"), bbox_inches='tight')
 
         fig, ax = plt.subplots(figsize=size)
         plt.grid(True)
-        ax.plot(results0[[u'Sub Reactive Power (MVar)']])
-        ax.plot(results1[[u'Sub Reactive Power (MVar)']])
+        # ax.plot(results1[[u'solar_pct']] * 3320.0 * -1)
+        ax.plot(results0[[u'PVGeneration(MVAr)']])
+        ax.plot(results1[[u'PVGeneration(MVAr)']])
         ax.legend(['PV MVar OPF=0', 'PV MVar OPF=1'])
+
+        # plt.show()
         fig.savefig(os.path.join(self.resFolder, "PV_Generation_MVar"), bbox_inches='tight')
+
+        fig, ax = plt.subplots(figsize=size)
+        plt.grid(True)
+        ax.plot(results0[[u'Load Demand (MVAr)']])
+        ax.plot(results1[[u'Load Demand (MVAr)']])
+        ax.legend(['Load Demand (MVar) OPF=0', 'Load Demand (MVar) OPF=1'])
+        fig.savefig(os.path.join(self.resFolder, "Load_Demand_MVar"), bbox_inches='tight')
 
         fig, ax = plt.subplots(figsize=size)
         plt.grid(True)
@@ -1265,7 +1227,9 @@ def _main():
     opts = parser.parse_args()
     _log.info(opts)
     listening_to_topic = simulation_output_topic(opts.simulation_id)
+    log_topic = simulation_log_topic(opts.simulation_id)
     print(listening_to_topic)
+    print(log_topic)
 
     sim_request = json.loads(opts.request.replace("\'", ""))
     model_mrid = sim_request['power_system_config']['Line_name']
@@ -1291,10 +1255,9 @@ def _main():
     der_0 = DER_Dispatch(opts.simulation_id, gapps, model_mrid, './FeederInfo', start_time, app_config, load_scale)
     der_0.setup()
     gapps.subscribe(listening_to_topic, der_0)
+    gapps.subscribe(log_topic, der_0)
 
-    stop ='/topic/goss.gridappsd.remoteapp.stop.der_dispatch_app'
-    gapps.subscribe(stop, der_0)
-    while True:
+    while der_0.running():
         time.sleep(0.1)
 
 def running_on_host():
@@ -1308,8 +1271,5 @@ if __name__ == '__main__':
         _main_local()
     else:
         _main()
-    # der_0 = DER_Dispatch_2(None)
-    # der_0.setup()
-    # der_0.sim()
-    # der_0.process_results()
+
 

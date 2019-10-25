@@ -1,3 +1,31 @@
+# Copyright (c) 2019 Alliance for Sustainable Energy, LLC
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 import math
 import cmath
 import numpy as np
@@ -81,7 +109,7 @@ def get_source(value):
     # feeder selection options - if all commented out, query matches all feeders
 
     query = prefix + '''
-    SELECT DISTINCT ?name ?bus ?basev ?nomv ?vmag ?vang ?r1 ?x1 ?r0 ?x0 ?trmid WHERE {
+    SELECT DISTINCT ?name  ?fdrid ?bus ?basev ?nomv ?vmag ?vang ?r1 ?x1 ?r0 ?x0 ?trmid WHERE {
      ''' + fidselect + '''
   #VALUES ?fdrid {"_40B1F0FA-8150-071D-A08F-CD104687EA5D"}
 #VALUES ?fdrid {"_C1C3E687-6FFD-C753-582B-632A27E28507"}  # 123 bus
@@ -116,6 +144,7 @@ def get_source(value):
     for b in results_obj['results']['bindings']:
         datum = dict()
         datum["name"] = b['name']['value']
+        datum["fdrid"] = b['fdrid']['value']
         datum["busname"] = b['bus']['value']
         datum['busphase'] = ['1', '2', '3']
         datum["numPhase"] = len(datum['busphase'])
@@ -376,7 +405,7 @@ ORDER BY ?cimtype ?name'''
         datum["numPhase"] = len(b['phases']['value'])
         if len(b['phases']['value']) == 0 :
             datum["numPhase"] = 3
-
+        datum['id'] = b['id']['value']
         datum['name'] = b['name']['value']
         datum['bus1'] = b['bus1']['value']
         datum['bus2'] = b['bus2']['value']
@@ -578,6 +607,8 @@ def lookup_meas(feeder =u'_4F76A5F9-271D-9EB8-5E31-AA362D86F2C3'):
         # print (b['bus']['value'], b['phases']['value'], b['eqtype']['value'], b['eqname']['value'], b['eqid']['value'], b['trmid']['value'] )
         result[b['id']['value']] = {'name': b['name']['value'], 'type':b['type']['value'], 'phases': b['phases']['value'],
                                    'trmid': b['trmid']['value'], 'bus': b['bus']['value'], 'ce': b['ce']['value'], 'eqid': b['eqid']['value']}
+        # if '_FC92A30E-1CFD-FB31-7705-36D3480C8395'  == b['trmid']['value']:
+        #     print('found _FC92A30E-1CFD-FB31-7705-36D3480C8395' + b['id']['value'] + ' '+ b['type']['value'])
 
 #         name_map[b['id']['value']] = b['name']['value']
 #         print(b['eqtype']['value'] )
@@ -784,6 +815,13 @@ def get_pv_PQ(datum_dict, AllNodeNames, meas_map, node_name_map, convert_to_radi
                 Q_values[index] = angle  # is angle right?
                 data[1]['current_time']['p'] = magnitude
                 data[1]['current_time']['q'] = angle
+            else:
+                print("No value for " + node_name + " " + str(node_name_map[node_name]))
+                data[1]['current_time']['p'] = 0.0
+                data[1]['current_time']['q'] = 0.0
+                data[1]['polar']['p'] = 0.0
+                data[1]['polar']['q'] = 0.0
+
     return P_values, Q_values, mrid
 
 
@@ -965,16 +1003,43 @@ def get_source_node_names(fidselect):
 if __name__ == '__main__':
     # fid_select = '_67AB291F-DCCD-31B7-B499-338206B9828F'
     fid_select_123 = '_C1C3E687-6FFD-C753-582B-632A27E28507'
-    fid_select_123_pv = '_E407CBB6-8C8D-9BC9-589C-AB83FBF0826D' # Mine 123pv'
+    fid_select = '_E407CBB6-8C8D-9BC9-589C-AB83FBF0826D' # Mine 123pv'
     # fid_select = '_C77C898B-788F-8442-5CEA-0D06ABA0693B'
-    fid_select = '_EBDB5A4A-543C-9025-243E-8CAD24307380'
+    # fid_select = '_EBDB5A4A-543C-9025-243E-8CAD24307380'
     # fid_select = '_4F76A5F9-271D-9EB8-5E31-AA362D86F2C3'
-    fid_select = '_C1C3E687-6FFD-C753-582B-632A27E28507'
-    fid_select = '_AAE94E4A-2465-6F5E-37B1-3E72183A4E44'
-    pvs = get_solar(fid_select)
-    print(pvs)
+    # fid_select = '_C1C3E687-6FFD-C753-582B-632A27E28507'
+    # fid_select = '_AAE94E4A-2465-6F5E-37B1-3E72183A4E44'
+    # fid_select = '_DA00D94F-4683-FD19-15D9-8FF002220115'  # mine with house
+
+
+    loads = get_loads_query(fid_select)
+    print(loads)
+#'_e1307d5d-ce0b-44bb-82f4-30ef9a193c15'
+    sources = get_source(fid_select)
+    print(sources)
+    result, name_map, node_name_map_va_power, node_name_map_pnv_voltage, pec_map, load_power_map, line_map, \
+           trans_map, cap_pos, tap_pos, load_voltage_map, line_voltage_map, trans_voltage_map = lookup_meas(fid_select)
+    _source_node_names = get_source_node_names(fid_select)
+    for node_name in _source_node_names:
+        if node_name in line_map:
+            term = line_map[node_name][0]
+            # print(node_name, term)
+            # source_total += complex(meas_map[term][u'magnitude'], meas_map[term][u'angle'])
+        elif node_name in trans_map:
+            term = trans_map[node_name]
+            print(node_name, term)
+            # source_total += complex(meas_map[term][u'magnitude'], meas_map[term][u'angle'])
+        else:
+            print("Figure out how to do this with transformer ends.")
     exit(0)
+
+    # pvs = get_solar(fid_select)
+    # print(pvs)
+    # exit(0)
     # lookup_meas('_4F76A5F9-271D-9EB8-5E31-AA362D86F2C3')
+    source = get_source(fid_select)
+    print(source)
+
     _source_node_names = get_source_node_names(fid_select)
     print(_source_node_names)
     # get_loads_query('_49AD8E07-3BF9-A4E2-CB8F-C3722F837B62')
