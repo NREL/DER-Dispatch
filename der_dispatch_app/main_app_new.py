@@ -98,6 +98,7 @@ class DER_Dispatch(DER_Dispatch_base):
         :param start_time:
         :param app_config:
         """
+        _log.info("Init application")
         DER_Dispatch_base.__init__(self, None) # TODO redo this
         # if running_on_host():
         #     exit()
@@ -150,6 +151,11 @@ class DER_Dispatch(DER_Dispatch_base):
         self._publish_to_topic = simulation_input_topic(simulation_id)
         self._send_simulation_status('STARTED', 'Initializing DER app for ' + str(self.simulation_id), 'INFO')
         self.MAX_LOG_LENGTH = 20
+
+        self._switches = []
+        self._switches_dict = {}
+        self._PV_dict = {}
+        self._load_dict = {}
 
         ctx = zmq.Context()
         self._skt = ctx.socket(zmq.PUB)
@@ -330,13 +336,21 @@ class DER_Dispatch(DER_Dispatch_base):
         _log.info(self.Vbase_allnode[:500])
 
         self.result, self.name_map, self.node_name_map_va_power, self.node_name_map_pnv_voltage, \
-        self.pec_map, self.load_power_map, self.line_map, self.trans_map, self.cap_pos, self.tap_pos,\
+        self.pec_map, self.load_power_map, self.line_map, self.trans_map, self.switch_pos, self.cap_pos, self.tap_pos,\
         self.load_voltage_map, self.line_voltage_map, self.trans_voltage_map = query_model.lookup_meas(self.fidselect)
+
+        _log.info("Get Regulators")
+        self._tap_name_map = {reg['bus'].upper() + '.' + query_model.lookup[reg['phs']]: reg['rname'] for reg in query_model.get_regulator(self.fidselect)}
+
+        _log.info("Get Switches")
+        self._switches = query_model.get_switches(self.fidselect)
+        self._switch_name_map = {switch['bus1'].upper() + '.' + query_model.lookup[switch['phases'][0]]: switch['name'] for switch in self._switches}
+        # for bn in self._switch_name_map.keys():
+        #     print('meas for switch at bus ' + bn + ' ' + self.switch_pos[bn])
 
         _log.info("Get PVs")
         self.PVSystem = query_model.get_solar(self.fidselect)
 
-        self._PV_dict = {}
         for load in self.PVSystem:
             for phase_index in range(load['numPhase']):
                 phase_name = load['phases'][phase_index]
@@ -377,7 +391,6 @@ class DER_Dispatch(DER_Dispatch_base):
         _log.info(self.PV_inverter_size)
 
         self.Load, total_load = query_model.get_loads_query(self.fidselect,self._load_scale) #TODO scale
-        self._load_dict = {}
 
         for load in self.Load:
             for phase_index in range(load['numPhase']):
@@ -527,20 +540,27 @@ class DER_Dispatch(DER_Dispatch_base):
 
         # print(headers['destination'])
         # print(message[:100])
-        if message == '{}':
+        _log.info('msg')
+        _log.info(type(message))
+        _log.info(str(message))
+        _log.info(headers['destination'])
+
+        if 'message' not in message:
             return
         if headers['destination'].startswith('/topic/goss.gridappsd.simulation.log.'+str(self.simulation_id)):
-            message = json.loads(message)
+            if type(message) == str:
+                message = json.loads(message)
             if message['processStatus'] == "COMPLETE":
                 print(message)
                 self.signal_handler(None, None)
             return
         # print(message[:100])
 
-        self._send_simulation_status('STARTED', "Rec message " + message[:100], 'INFO')
+        self._send_simulation_status('STARTED', "Rec message " + str(message)[:100], 'INFO')
 
        # {'simulation_id': '927687385', 'message': {'timestamp': 1374510962, 'measurements': []}}
-        message = json.loads(message)
+        if type(message) == str:
+            message = json.loads(message)
         if self.timestamp_ == message['message']['timestamp']:
             # print("Measurements is duplicate")
             # _log.info("Measurements is duplicate")
@@ -561,13 +581,20 @@ class DER_Dispatch(DER_Dispatch_base):
                 _log.info("Pausing to work")
 
         meas_map = message['message']['measurements']
+        with open('meas_map.json', 'w') as outfile:
+            json.dump(meas_map, outfile, indent=2)
         # meas_map = query_model.get_meas_map(message)
 
         print("Get Tap Pos")
         taps = query_model.get_pos(meas_map, self.tap_pos)
-        # print(taps)
+        print(taps)
 
-        # self.PVSystem = query_model.get_solar(self.fidselect)
+        print("Get Switches Pos")
+        switch_pos = query_model.get_pos(meas_map, self.switch_pos)
+        for name, value in self._switch_name_map.items():
+            print(name, value, switch_pos[name])
+        print(switch_pos)
+
         print("Get PQ Load")
         PQ_load = query_model.get_PQNode(self.AllNodeNames, meas_map, self.load_power_map, convert_to_radian=True)
         query_model.get_pv_PQ(self._load_dict, self.AllNodeNames, meas_map, self.load_power_map, convert_to_radian=True)
@@ -766,7 +793,7 @@ class DER_Dispatch(DER_Dispatch_base):
         plot_time = datetime.fromtimestamp(self.timestamp_, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
         plot_time = self.timestamp_
 
-        self.send_plots(ghi, plot_time, result0_df, solar_diff, source_total)
+        self.send_plots(ghi, plot_time, result0_df, solar_diff, source_total, meas_map)
 
         print('**************** time step= ' + str(self.present_step) + ' : ' + str(
             self.timestamp_) + '***************')
@@ -776,7 +803,7 @@ class DER_Dispatch(DER_Dispatch_base):
             self._send_resume()
             _log.info("Resuming to work")
 
-    def send_plots(self, ghi, plot_time, result0_df, solar_diff, source_total):
+    def send_plots(self, ghi, plot_time, result0_df, solar_diff, source_total, meas_map):
         obj = {}
         temp_dict = {}
         temp_dict[u'Load Demand (MW)'] = {'data': self._results['Load Demand (MW)'], 'time': plot_time}
@@ -804,8 +831,8 @@ class DER_Dispatch(DER_Dispatch_base):
         obj[u'Weather'] = temp_dict
         # print(repr(temp_dict))
         plot_range = len(self._PV_dict.items())
-        if plot_range > 60:
-            plot_range = 60
+        if plot_range > 120:
+            plot_range = 120
         for count, i in enumerate(range(0, plot_range, self.MAX_LOG_LENGTH)):
             last = i
             temp_pv_dict = dict(islice(self._PV_dict.items(), last, i+self.MAX_LOG_LENGTH))
@@ -815,6 +842,16 @@ class DER_Dispatch(DER_Dispatch_base):
             temp_dict_pv_q = {pv[1]['name']: {'data': pv[1]['current_time']['q'] * self._vmult, 'time': plot_time} for pv in
                          temp_pv_dict.items()}
             obj[u'Power P (KVar) ' + str(count)] = temp_dict_pv_q
+
+        tap_pos = query_model.get_pos(meas_map, self.tap_pos)
+        temp_tap_dict = dict(islice(self._tap_name_map.items(), self.MAX_LOG_LENGTH))
+        temp_dict = {pv[1]: {'data': tap_pos[pv[0]], 'time': plot_time} for pv in temp_tap_dict.items()}
+        obj[u'Regulator Pos'] = temp_dict
+
+        switch_pos = query_model.get_pos(meas_map, self.switch_pos)
+        temp_switch_dict = dict(islice(self._switch_name_map.items(), self.MAX_LOG_LENGTH))
+        temp_dict = {pv[1]: {'data': switch_pos[pv[0]], 'time': plot_time} for pv in temp_switch_dict.items()}
+        obj[u'Switch Pos'] = temp_dict
 
         jobj = json.dumps(obj).encode('utf8')
         zobj = zlib.compress(jobj)
