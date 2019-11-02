@@ -62,15 +62,15 @@ GridAPPS-D deployment.
 Set start time to 2013-07-22 10:32:00
 
     ```json
-    {'OPF': 1,
-     'run_freq': 60,
-     'run_on_host': true,
-     'run_realtime': true,
-     'stepsize_xp': 0.2,
-     'stepsize_xq': 2,
-     'coeff_p': 0.1,
-     'coeff_q': 0.00005,
-     'stepsize_mu': 500}
+    {"OPF": 1,
+     "run_freq": 60,
+     "run_on_host": false,
+     "run_realtime": false,
+     "stepsize_xp": 0.2,
+     "stepsize_xq": 2,
+     "coeff_p": 0.1,
+     "coeff_q": 0.00005,
+     "stepsize_mu": 500}
     ```
 
 Next to start the application through the viz follow the directions here: https://gridappsd.readthedocs.io/en/latest/using_gridappsd/index.html#start-gridapps-d-platform
@@ -78,3 +78,20 @@ Next to start the application through the viz follow the directions here: https:
 ```bash
 python /usr/src/gridappsd-der-dispatch/der_dispatch_app/main_app_new.py 952325492 '{"power_system_config":{"SubGeographicalRegion_name":"_1CD7D2EE-3C91-3248-5662-A43EFEFAC224","GeographicalRegion_name":"_24809814-4EC6-29D2-B509-7F8BFB646437","Line_name":"_EBDB5A4A-543C-9025-243E-8CAD24307380"},"simulation_config":{"power_flow_solver_method":"NR","duration":600,"simulation_name":"ieee123","simulator":"GridLAB-D","start_time":1374510720,"run_realtime":false,"simulation_output":{},"model_creation_config":{"load_scaling_factor":1.0,"triplex":"y","encoding":"u","system_frequency":60,"voltage_multiplier":1.0,"power_unit_conversion":1.0,"unique_names":"y","schedule_name":"ieeezipload","z_fraction":0.0,"i_fraction":1.0,"p_fraction":0.0,"randomize_zipload_fractions":false,"use_houses":false},"simulation_broker_port":59469,"simulation_broker_location":"127.0.0.1"},"application_config":{"applications":[{"name":"der_dispatch_app","config_string":"{\"OPF\": 0, \"run_freq\": 60, \"run_on_host\": false, \"run_realtime\": false, \"stepsize_xp\": 0.2, \"stepsize_xq\": 2, \"coeff_p\": 0.1, \"coeff_q\": 5e-05, \"stepsize_mu\": 500}"}]},"simulation_request_type":"NEW"}' '{OPF:0,run_freq:60,run_on_host:false,run_realtime:false,stepsize_xp:0.2,stepsize_xq:2,coeff_p:0.1,coeff_q:5e-05,stepsize_mu:500}'
 ```
+
+```json
+python /usr/src/gridappsd-der-dispatch/der_dispatch_app/main_app_new.py 1522305637 '{"power_system_config":{"SubGeographicalRegion_name":"_1CD7D2EE-3C91-3248-5662-A43EFEFAC224","GeographicalRegion_name":"_24809814-4EC6-29D2-B509-7F8BFB646437","Line_name":"_E407CBB6-8C8D-9BC9-589C-AB83FBF0826D"},"simulation_config":{"power_flow_solver_method":"NR","duration":600,"simulation_name":"ieee123","simulator":"GridLAB-D","start_time":1374510720,"run_realtime":false,"simulation_output":{},"model_creation_config":{"load_scaling_factor":1.0,"triplex":"y","encoding":"u","system_frequency":60,"voltage_multiplier":1.0,"power_unit_conversion":1.0,"unique_names":"y","schedule_name":"ieeezipload","z_fraction":0.0,"i_fraction":1.0,"p_fraction":0.0,"randomize_zipload_fractions":false,"use_houses":false},"simulation_broker_port":59469,"simulation_broker_location":"127.0.0.1"},"application_config":{"applications":[{"name":"der_dispatch_app","config_string":"{\"OPF\": 0, \"run_freq\": 60, \"run_on_host\": false, \"run_realtime\": false, \"stepsize_xp\": 0.2, \"stepsize_xq\": 2, \"coeff_p\": 0.1, \"coeff_q\": 5e-05, \"stepsize_mu\": 500}"}]},"simulation_request_type":"NEW"}' '{OPF:0,run_freq:60,run_on_host:false,run_realtime:false,stepsize_xp:0.2,stepsize_xq:2,coeff_p:0.1,coeff_q:5e-05,stepsize_mu:500}'
+```
+
+
+
+```json
+{"OPF": 0, "run_freq": 60, "run_on_host": false, "run_realtime": true, "stepsize_xp": 0.2, "stepsize_xq": 2, "coeff_p": 0.1, "coeff_q": 5e-05, "stepsize_mu": 500}
+```
+
+Run with OPF = 0  and a specific time and duration first to get the baseline for comparison.
+Then Run with OPF = 1 and the same time and duration evaluate the applications performance against the baseline.
+
+docker cp 422635e932bb:/usr/src/gridappsd-der-dispatch/der_dispatch_app/adms_result_test9500new_1374510720_OPF_1_stepsize_xp_0_2_stepsize_xq_2_coeff_p_0_1_coeff_q_5e_neg_05_stepsize_mu_500/ $HOME/
+
+
