@@ -49,10 +49,10 @@ weather_channel = 'goss.gridappsd.process.request.data.timeseries'
 def query_weather(start_time, end_time):
     query = {"queryMeasurement":"weather",
             "queryFilter":{"startTime":"1357048800000000",
-                            "endTime":"1357058860000000"},
+                            "endTime":"1357048860000000"},
                             "responseFormat":"JSON"}
-    query['queryFilter']['startTime'] = start_time
-    query['queryFilter']['endTime'] = end_time
+    query['queryFilter']['startTime'] = str(start_time)
+    query['queryFilter']['endTime'] = str(end_time)
 
     weather_results = gridappsd_obj.get_response(weather_channel, query, timeout=220)
 
@@ -181,6 +181,12 @@ def test5():
     adjusted_time = int(t.replace(year=2013).replace(tzinfo=timezone.utc).timestamp())
     start_time = adjusted_time + (0 * 60 * 60)
     end_time = adjusted_time + 3600 * 24
+    _weather_df = query_weather(start_time , end_time )
+    print(_weather_df)
+
+    adjusted_time = int(t.replace(year=2013).replace(tzinfo=timezone.utc).timestamp())
+    start_time = adjusted_time + (0 * 60 * 60)
+    end_time = adjusted_time + 3600 * 24
     _weather_df = query_weather(start_time * 1000000, end_time * 1000000)
     print(_weather_df)
 
@@ -208,7 +214,12 @@ def test5():
     ghi = temp_df['DirectCH1']
     print("DirectDH1 is " + str(ghi))
 
+def test0():
+    weather_df = query_weather(1357048800000000, 1357048860000000)
+    print(weather_df)
+
 if __name__ == '__main__':
+    # test0()
     #
     # test1()
     # #
