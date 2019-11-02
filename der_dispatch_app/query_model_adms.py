@@ -292,7 +292,7 @@ def get_regulator(value='_EBDB5A4A-543C-9025-243E-8CAD24307380'):
     query=prefix+'''
 SELECT ?rname ?pname ?tname ?wnum ?phs ?incr ?mode ?enabled ?highStep ?lowStep ?neutralStep ?normalStep ?neutralU 
  ?step ?initDelay ?subDelay ?ltc ?vlim 
-	?vset ?vbw ?ldc ?fwdR ?fwdX ?revR ?revX ?discrete ?ctl_enabled ?ctlmode ?monphs ?ctRating ?ctRatio ?ptRatio ?id ?fdrid
+	?vset ?vbw ?ldc ?fwdR ?fwdX ?revR ?revX ?discrete ?ctl_enabled ?ctlmode ?monphs ?ctRating ?ctRatio ?ptRatio ?id ?fdrid ?bus
 WHERE {
  ''' + fidselect + '''
  ?pxf c:Equipment.EquipmentContainer ?fdr.
@@ -300,6 +300,10 @@ WHERE {
  ?rtc r:type c:RatioTapChanger.
  ?rtc c:IdentifiedObject.name ?rname.
  ?rtc c:RatioTapChanger.TransformerEnd ?end.
+ ?end c:TransformerEnd.Terminal ?trm.
+ ?trm c:IdentifiedObject.mRID ?trmid.
+ ?trm c:Terminal.ConnectivityNode ?cn. 
+ ?cn c:IdentifiedObject.name ?bus.
  ?end c:TransformerEnd.endNumber ?wnum.
  OPTIONAL {?end c:TransformerTankEnd.phases ?phsraw.
   bind(strafter(str(?phsraw),"PhaseCode.") as ?phs)}
@@ -340,8 +344,9 @@ WHERE {
  ?inf c:TapChangerInfo.ctRating ?ctRating.
  ?inf c:TapChangerInfo.ctRatio ?ctRatio.
  ?inf c:TapChangerInfo.ptRatio ?ptRatio.
+
 }
-ORDER BY ?pname ?tname ?rname ?wnum'''
+ORDER BY ?pname ?tname ?rname ?wnum ?bus'''
     data = []
     results = gridappsd_obj.query_data(query, timeout=120)
     results_obj = results['data']
@@ -594,6 +599,7 @@ def lookup_meas(feeder =u'_4F76A5F9-271D-9EB8-5E31-AA362D86F2C3'):
     pec_map = {}
     load_power_map = {}
     load_voltage_map = {}
+    switch_pos = {}
     cap_pos = {}
     tap_pos = {}
     line_map = {}
@@ -616,10 +622,14 @@ def lookup_meas(feeder =u'_4F76A5F9-271D-9EB8-5E31-AA362D86F2C3'):
         name = b['bus']['value'].upper() + '.' + lookup[b['phases']['value']]
         mrid_types.add(b['eqtype']['value'])
         if b['type']['value'] == 'Pos':
+            if b['eqtype']['value'] == u'LoadBreakSwitch':
+                switch_pos[name] = b['id']['value']
             if b['eqtype']['value'] == u'LinearShuntCompensator':
                 cap_pos[name] = b['id']['value']
             if b['eqtype']['value'] == u'PowerTransformer':
                 # print(name, b['eqtype']['value'], b['name']['value'],  b['id']['value'], b['phases']['value'])
+                print(b['eqid']['value'])
+                print(b['name']['value'])
                 tap_pos[name] = b['id']['value']
         if b['type']['value'] == 'VA':
             node_name_map_va_power[name] = b['id']['value']
@@ -651,7 +661,7 @@ def lookup_meas(feeder =u'_4F76A5F9-271D-9EB8-5E31-AA362D86F2C3'):
     # print(mrid_types)
     # print(trans_map)
     return result, name_map, node_name_map_va_power, node_name_map_pnv_voltage, pec_map, load_power_map, line_map, \
-           trans_map, cap_pos, tap_pos, load_voltage_map, line_voltage_map, trans_voltage_map
+           trans_map, switch_pos, cap_pos, tap_pos, load_voltage_map, line_voltage_map, trans_voltage_map
 
 
 #Remap list to measid : values
@@ -693,20 +703,20 @@ def get_YVANode(nodenames, nodename_term_map, meas_map, name_map):
 
 def get_pos(meas_map, node_name_map):
     '''
-    Get the P and Q from the node map and measurment map
+    Get the Position from the node map and measurment map
     :param nodenames:
     :param meas_map:
     :param node_name_map:
     :param convert_to_radian: # Convert degrees to radian
     :return:
     '''
-    pos = []
+    pos = {}
     for name, v in node_name_map.items():
         if v in meas_map:
             meas = meas_map[v]
-            pos.append({'name':name,'pos':meas['value']})
+            pos[name] = meas['value']
         else:
-            pos.append({'name': name, 'pos': None})
+            pos[name] = None
     return pos
 
 def get_PQNode(nodenames, meas_map, node_name_map, convert_to_radian=False):
@@ -735,6 +745,7 @@ def get_PQNode(nodenames, meas_map, node_name_map, convert_to_radian=False):
                     temp = complex(*pol2cart(meas_map[mid]['magnitude'], meas_map[mid]['angle']))
                 PQNode.append(temp)
             else:
+                print('No PQ meas for ' + nn + ' ' + mid)
                 PQNode.append(complex(0,0))
     return PQNode
 
@@ -1008,7 +1019,7 @@ if __name__ == '__main__':
     # fid_select = '_EBDB5A4A-543C-9025-243E-8CAD24307380'
     # fid_select = '_4F76A5F9-271D-9EB8-5E31-AA362D86F2C3'
     # fid_select = '_C1C3E687-6FFD-C753-582B-632A27E28507'
-    # fid_select = '_AAE94E4A-2465-6F5E-37B1-3E72183A4E44'
+    fid_select = '_AAE94E4A-2465-6F5E-37B1-3E72183A4E44'
     # fid_select = '_DA00D94F-4683-FD19-15D9-8FF002220115'  # mine with house
 
 
