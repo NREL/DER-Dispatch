@@ -627,9 +627,6 @@ def lookup_meas(feeder =u'_4F76A5F9-271D-9EB8-5E31-AA362D86F2C3'):
             if b['eqtype']['value'] == u'LinearShuntCompensator':
                 cap_pos[name] = b['id']['value']
             if b['eqtype']['value'] == u'PowerTransformer':
-                # print(name, b['eqtype']['value'], b['name']['value'],  b['id']['value'], b['phases']['value'])
-                print(b['eqid']['value'])
-                print(b['name']['value'])
                 tap_pos[name] = b['id']['value']
         if b['type']['value'] == 'VA':
             node_name_map_va_power[name] = b['id']['value']
@@ -887,8 +884,8 @@ ORDER by ?name'''
     results = gridappsd_obj.query_data(query)
     results_obj = results['data']
     for b in results_obj['results']['bindings']:
-        print (b['name']['value'], b['basev']['value'], b['nomu']['value'], b['bsection']['value'], b['bus']['value'], b['conn']['value'],
-               b['grnd']['value'], b['id']['value'])
+        # print (b['name']['value'], b['basev']['value'], b['nomu']['value'], b['bsection']['value'], b['bus']['value'], b['conn']['value'],
+        #        b['grnd']['value'], b['id']['value'])
 
         datum = dict()
         if 'phs' not in b:
@@ -1023,13 +1020,13 @@ if __name__ == '__main__':
     # fid_select = '_DA00D94F-4683-FD19-15D9-8FF002220115'  # mine with house
 
 
-    loads = get_loads_query(fid_select)
-    print(loads)
+    # loads = get_loads_query(fid_select)
+    # print(loads)
 #'_e1307d5d-ce0b-44bb-82f4-30ef9a193c15'
     sources = get_source(fid_select)
     print(sources)
     result, name_map, node_name_map_va_power, node_name_map_pnv_voltage, pec_map, load_power_map, line_map, \
-           trans_map, cap_pos, tap_pos, load_voltage_map, line_voltage_map, trans_voltage_map = lookup_meas(fid_select)
+    trans_map, switch_pos, cap_pos, tap_pos, load_voltage_map, line_voltage_map, trans_voltage_map = lookup_meas(fid_select)
     _source_node_names = get_source_node_names(fid_select)
     for node_name in _source_node_names:
         if node_name in line_map:
@@ -1042,7 +1039,7 @@ if __name__ == '__main__':
             # source_total += complex(meas_map[term][u'magnitude'], meas_map[term][u'angle'])
         else:
             print("Figure out how to do this with transformer ends.")
-    exit(0)
+    # exit(0)
 
     # pvs = get_solar(fid_select)
     # print(pvs)
@@ -1072,6 +1069,7 @@ if __name__ == '__main__':
     # print(pvs)
     pvs = get_solar(fid_select)
     print(pvs)
+    exit(0)
 
     loads = get_loads_query(fid_select)
 

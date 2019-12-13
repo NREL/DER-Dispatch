@@ -51,6 +51,7 @@ import time
 
 from uuid import uuid4
 sys.path.append('/usr/src/gridappsd-python')
+from gridappsd.goss import TimeoutError
 from gridappsd import GridAPPSD, DifferenceBuilder
 from gridappsd.topics import simulation_input_topic, simulation_output_topic, simulation_log_topic
 input_from_goss_topic = '/topic/goss.gridappsd.fncs.input'
@@ -233,25 +234,11 @@ class DER_Dispatch(DER_Dispatch_base):
         ybus_config_request = {"configurationType": "YBus Export",
                                "parameters": {"simulation_id": 1659746927}}
         ybus_config_request['parameters']['simulation_id'] = str(self.simulation_id)
-        #{
-  # "configurationType":"YBus Export",
-  # "parameters":{"simulation_id":"678841139"}
-  # }
-  #       time.sleep(5)
+        ybus = self._gapps.get_response("goss.gridappsd.process.request.config", ybus_config_request, timeout=400)
 
-        if self.fidselect != '_AAE94E4A-2465-6F5E-37B1-3E72183A4E44_XXXXXXXX':
-            'goss.gridappsd.process.request.config'
-            ybus = self._gapps.get_response("goss.gridappsd.process.request.config", ybus_config_request, timeout=240)
-
-            self.AllNodeNames = ybus['data']['nodeList']
-            self.AllNodeNames = [node.replace('"','') for node in self.AllNodeNames]
-            ybus_data = ybus['data']['yParse']
-
-            # Old
-            # self.AllNodeNames = ybus['data']['nodeListFilePath']
-            # self.AllNodeNames = [node.replace('"','') for node in self.AllNodeNames]
-            # ybus_data = ybus['data']['yParseFilePath']
-
+        self.AllNodeNames = ybus['data']['nodeList']
+        self.AllNodeNames = [node.replace('"', '') for node in self.AllNodeNames]
+        ybus_data = ybus['data']['yParse']
 
         _log.info("NodeNames")
         _log.info(self.AllNodeNames)
@@ -311,7 +298,13 @@ class DER_Dispatch(DER_Dispatch_base):
         YVA_file = os.path.join(FeederDir, 'base_no_va.csv')
         # Ysparse_file = os.path.join(FeederDir, 'base_no_ysparse_temp.csv')
 
-        self._source_node_names = query_model.get_source_node_names(self.fidselect)
+        try:
+            self._source_node_names = query_model.get_source_node_names(self.fidselect)
+        except TimeoutError as error:
+            self._send_simulation_status('RUNNING', 'GOSS timeout error:' + str(error), 'ERROR')
+            _log.error('GOSS timeout error:' + str(error), exc_info=True)
+            self.signal_handler(None, None)
+
         self._source_dict = {}
         for sn in self._source_node_names:
             # index = self.AllNodeNames.index(sn)
@@ -499,6 +492,7 @@ class DER_Dispatch(DER_Dispatch_base):
         self.control_bus = np.concatenate((self.AllNodeNames[:self.slack_start], self.AllNodeNames[self.slack_end+1:]))
         self.control_bus_index = [self.all_node_index[ii] for ii in self.control_bus]
 
+        _log.info("End setup")
         if not self._run_realtime:
             self._send_resume()
             _log.info("Resuming after setup")
@@ -540,27 +534,30 @@ class DER_Dispatch(DER_Dispatch_base):
 
         # print(headers['destination'])
         # print(message[:100])
-        _log.info('msg')
-        _log.info(type(message))
-        _log.info(str(message))
+        # _log.info('msg')
+        # _log.info(type(message))
+        _log.info(str(message)[:500])
         _log.info(headers['destination'])
+        _log.info(type(message))
+        if type(message) == str:
+            message = json.loads(message)
+        _log.info(message.keys())
 
-        if 'message' not in message:
-            return
         if headers['destination'].startswith('/topic/goss.gridappsd.simulation.log.'+str(self.simulation_id)):
-            if type(message) == str:
-                message = json.loads(message)
-            if message['processStatus'] == "COMPLETE":
+            # print(message)
+            if 'processStatus' in message and message['processStatus'] == "COMPLETE":
                 print(message)
                 self.signal_handler(None, None)
+            return
+
+        if 'message' not in message:
             return
         # print(message[:100])
 
         self._send_simulation_status('STARTED', "Rec message " + str(message)[:100], 'INFO')
 
        # {'simulation_id': '927687385', 'message': {'timestamp': 1374510962, 'measurements': []}}
-        if type(message) == str:
-            message = json.loads(message)
+
         if self.timestamp_ == message['message']['timestamp']:
             # print("Measurements is duplicate")
             # _log.info("Measurements is duplicate")
@@ -583,17 +580,6 @@ class DER_Dispatch(DER_Dispatch_base):
         meas_map = message['message']['measurements']
         with open('meas_map.json', 'w') as outfile:
             json.dump(meas_map, outfile, indent=2)
-        # meas_map = query_model.get_meas_map(message)
-
-        print("Get Tap Pos")
-        taps = query_model.get_pos(meas_map, self.tap_pos)
-        print(taps)
-
-        print("Get Switches Pos")
-        switch_pos = query_model.get_pos(meas_map, self.switch_pos)
-        for name, value in self._switch_name_map.items():
-            print(name, value, switch_pos[name])
-        print(switch_pos)
 
         print("Get PQ Load")
         PQ_load = query_model.get_PQNode(self.AllNodeNames, meas_map, self.load_power_map, convert_to_radian=True)
@@ -673,14 +659,20 @@ class DER_Dispatch(DER_Dispatch_base):
         ## Check for zero pv p
         current_pv = [v['current_time']['p'] for k, v in self._PV_dict.items()]
         PVname = np.array([v['name'] for k, v in self._PV_dict.items()])
-        pv_zero_mask = np.array(current_pv) == 0
+        pv_zero_mask = np.array(current_pv) == 0.0
         if pv_zero_mask.sum() > 0:
             print('Check pv zero')
+            print(repr(current_pv))
             print(repr(PVmax))
             print(repr(pv_zero_mask))
+            _log.info('Check pv zero')
+            _log.info(repr(current_pv))
+            _log.info(repr(PVmax))
+            _log.info(repr(pv_zero_mask))
             PVmax = np.array(PVmax)
             PVmax[pv_zero_mask] = 0
             print(repr(PVmax))
+            _log.info(repr(PVmax))
             PVmax = PVmax.tolist()
             pct_pv_off = pv_zero_mask.sum() / len(PVmax)
             if pv_zero_mask.sum() > 0:
