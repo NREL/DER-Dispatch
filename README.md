@@ -99,7 +99,7 @@ The baseline will be in this folder in the container:
 
 Set OPF to 1 and run again.
 
-    ```json
+```json
     {
       "OPF": 1,
       "run_freq": 15,
@@ -114,7 +114,7 @@ Set OPF to 1 and run again.
       "stepsize_mu": 50000,
       "optimizer_num_iterations": 10
     }
-    ```
+```
     
 1. docker copy command
 ```bash
