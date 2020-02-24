@@ -60,7 +60,26 @@ GridAPPS-D deployment.
     
     ```
 
-1. Application Configuration
+1. Test opt_function.pyc file.
+```bash
+docker exec -it gridappsd-docker_derdispatch_1 bash
+
+cd der_dispatch_app
+## This function is slow but it should not hang 
+python test_opt_function.py
+```
+
+Example output
+```
+> python test_opt_function.py 
+('gridappsd', 61613)
+Mon Feb 24 18:20:24 2020
+(9480, 9480) (9480, 10)
+Mon Feb 24 18:21:22 2020
+Mon Feb 24 18:21:29 2020
+```
+
+## Application Configuration
 
 Set start time to 2013-07-22 10:30:00
 
