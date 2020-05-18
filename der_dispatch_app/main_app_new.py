@@ -1260,15 +1260,22 @@ def _main():
     print(listening_to_topic)
     print(log_topic)
 
-    sim_request = json.loads(opts.request.replace("\'", ""))
+    # print('request')
+    # print(repr(opts.request))
+
+    # sim_request = json.loads(opts.request.replace("\'", ""))
+    sim_request = json.loads(opts.request)
+    # sim_request = opts.request
     model_mrid = sim_request['power_system_config']['Line_name']
     start_time = sim_request['simulation_config']['start_time']
     app_config = sim_request["application_config"]["applications"]
     load_scale = sim_request['simulation_config']['model_creation_config']['load_scaling_factor']
     # app_config = [json.loads(app['config_string']) for app in app_config if app['name'] == 'der_dispatch_app'][0]
     app = [app for app in app_config if app['name'] == 'der_dispatch_app'][0]
+    _log.info('config_string')
+    _log.info(app['config_string'])
     if app['config_string']:
-        app_config = json.loads(app['config_string'].replace(u'\u0027', '"'))
+        app_config = json.loads(app['config_string'])
     else:
         app_config = {'run_freq': 60, 'run_on_host': False}
     _log.info(app_config['run_on_host'])
