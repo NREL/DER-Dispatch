@@ -249,3 +249,26 @@ def construct_Ymatrix_amds_slack(Ysparse, slack_no, slack_start, slack_end, tota
     # Y11_inv = lu_obj.solve(eye)
     #     return [Y00,Y01,Y10,Y11,Y11_sparse,Y11_inv,Ymatrix, tempY01, tempY11]
     return [Y00, Y01, Y10,  Y11_inv]
+
+def linear_powerflow_model_slack_sparse_1(Y00,Y01,Y10,Y11_inv,V1,slack_no, slack_start, slack_end):
+    # voltage linearlization
+    # V1_conj = np.conj(V1[slack_no:])
+    V1_conj = np.conj(np.concatenate((V1[:slack_start],V1[slack_end+1:])))
+    V1_conj_inv = 1 / V1_conj
+    coeff_V = Y11_inv.toarray() * V1_conj_inv
+    # coeff_V_P = coeff_V
+    # coeff_V_Q = -1j*coeff_V
+    coeff_V_P = []
+    coeff_V_Q = []
+    coeff_Vm = -np.dot(Y11_inv.toarray(),np.dot(Y10.toarray(),V1[slack_start:slack_end+1]))
+
+    # voltage magnitude linearization
+    m = coeff_Vm
+    m_inv = 1 / coeff_Vm
+    coeff_Vmag_k = abs(m)
+    A = (np.multiply(coeff_V.transpose(),m_inv)).transpose()
+    coeff_Vmag_Q = (np.multiply((-1j*A).real.transpose(),coeff_Vmag_k)).transpose()
+    coeff_Vmag_k = 0
+    coeff_Vmag_P = (np.multiply(A.real.transpose(),coeff_Vmag_k)).transpose()
+
+    return [coeff_V_P, coeff_V_Q, coeff_Vm, coeff_Vmag_P, coeff_Vmag_Q, coeff_Vmag_k]

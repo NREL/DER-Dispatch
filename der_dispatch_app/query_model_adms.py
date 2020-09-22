@@ -227,6 +227,8 @@ def get_solar(value='_67AB291F-DCCD-31B7-B499-338206B9828F'):
         datum['power'] = [float(b['p']['value']) * vmult, float(b['q']['value']) * vmult]
         datum['p'] = float(b['p']['value']) * vmult
         datum['q'] = float(b['q']['value']) * vmult
+        datum['ratedS'] = b['ratedS']['value']
+        datum['ratedU'] = b['ratedU']['value']
 #         datum["power"] = dss.CktElement.Powers()[0:2]
 
         data.append(datum)
@@ -286,6 +288,60 @@ def get_line_segements( value='_67AB291F-DCCD-31B7-B499-338206B9828F'):
         datum['trm2id'] = b['trm2id']['value']
         data.append(datum)
     return data
+
+def is_secondary(pv):
+#     print(pv['phases'][0].lower()[:])
+    if pv['phases'][0].lower()[:2] == 's1' or pv['phases'][0].lower()[:2] == 's2':
+        return True;
+    return False
+
+def get_high_side_tank(transformer_tanks):
+    max_size = 0
+    result = None
+    for t in transformer_tanks:
+        if float(t['basekv']) > max_size:
+            result=t
+            max_size=float(t['basekv'])
+    return result
+
+def get_pv_secondary_to_primary_map(fidselect):
+    line_segs = get_line_segements(fidselect)
+    line_segs_bus1 = {ls['bus1']:ls['bus2'] for ls in line_segs}
+    line_segs_bus2 = {ls['bus2']:ls['bus1'] for ls in line_segs}
+    pvs = get_solar(fidselect)
+    trans_with_tanks = get_transformer_with_tanks(fidselect)
+    trans_with_tanks_name_dict  = {}#  {t['name']+t:t for t in trans_with_tanks}
+    for t in trans_with_tanks:
+        if t['pmrid'] not in trans_with_tanks_name_dict:
+            trans_with_tanks_name_dict[t['pmrid']] = []
+        trans_with_tanks_name_dict[t['pmrid']].append(t)
+    pv_secondary_to_primary_mapping = {}
+    for pv in pvs:
+        if is_secondary(pv):
+    #         print(pv['bus'])
+            bus_to_trans = pv['bus']
+            if pv['bus'] in line_segs_bus1:
+                bus_to_trans = line_segs_bus1[pv['bus']]
+    #             print(line_segs_bus1[pv['bus']])
+            if pv['bus'] in line_segs_bus2:
+                bus_to_trans = line_segs_bus2[pv['bus']]
+    #             print(pv['bus'], line_segs_bus2[pv['bus']])
+    #         for ls in line_segs:
+    #              pv['bus'] == ls[]
+            for tran in trans_with_tanks:
+                if bus_to_trans == tran['bus']:
+#                     print(pv)
+                    primary_tank = get_high_side_tank(trans_with_tanks_name_dict[tran['pmrid']])
+                    for phase in pv['busphase']:
+                        sec_bus=pv['bus'].upper()+'.'+phase
+                        high_side_phase = primary_tank
+                        datum = {'name': pv['name'],
+                                'id':pv['id'],
+                                'pv_bus':sec_bus,
+                                'primary_bus':high_side_phase['bus']+'.'+lookup[high_side_phase['phases'][0]],
+                                'primary_tank':primary_tank}
+                        pv_secondary_to_primary_mapping[sec_bus]=datum
+    return pv_secondary_to_primary_mapping
 
 def get_regulator(value='_EBDB5A4A-543C-9025-243E-8CAD24307380'):
     fidselect = """ VALUES ?fdrid {\"""" + value + """\"} """
@@ -420,11 +476,11 @@ ORDER BY ?cimtype ?name'''
         data.append(datum)
     return data
 
+
 def get_transformer_with_tanks(value='_40B1F0FA-8150-071D-A08F-CD104687EA5D'):
     fidselect = """ VALUES ?fdrid {\"""" + value + """\"} """
-
     query=prefix+'''
-SELECT ?pname ?tname ?xfmrcode ?vgrp ?enum ?bus ?basev ?phs ?grounded ?rground ?xground ?fdrid ?trmid WHERE {
+SELECT ?pname ?tname ?pmrid ?xfmrcode ?vgrp ?enum ?bus ?basev ?phs ?grounded ?rground ?xground ?fdrid ?trmid WHERE {
  ?p r:type c:PowerTransformer.
 # feeder selection options - if all commented out, query matches all feeders
 ''' + fidselect + '''
@@ -440,6 +496,7 @@ SELECT ?pname ?tname ?xfmrcode ?vgrp ?enum ?bus ?basev ?phs ?grounded ?rground ?
  ?p c:PowerTransformer.vectorGroup ?vgrp.
  ?t c:TransformerTank.PowerTransformer ?p.
  ?t c:IdentifiedObject.name ?tname.
+ ?t c:IdentifiedObject.mRID ?pmrid.
  ?asset c:Asset.PowerSystemResources ?t.
  ?asset c:Asset.AssetInfo ?inf.
  ?inf c:IdentifiedObject.name ?xfmrcode.
@@ -462,14 +519,19 @@ SELECT ?pname ?tname ?xfmrcode ?vgrp ?enum ?bus ?basev ?phs ?grounded ?rground ?
     results = gridappsd_obj.query_data(query, timeout=120)
     results_obj = results['data']
     for b in results_obj['results']['bindings']:
+#         if b['tname']['value'] == 'tpoletop':
+#             print(b)
         # print(b['pname']['value'], b['bus']['value'], b['phs']['value'], b['basev']['value'])
         datum = {'name':  b['tname']['value'],
+                 'pmrid':  b['pmrid']['value'],
+                 'vgrp': b['vgrp']['value'],
                  'phases': [b['phs']['value']],
                  'bus': b['bus']['value'],
                  'basekv': b['basev']['value'],
                  'trmid':b['trmid']['value']}
         data.append(datum)
     return data
+
 
 def get_transformer_no_tanks(value='_40B1F0FA-8150-071D-A08F-CD104687EA5D'):
     fidselect = """ VALUES ?fdrid {\"""" + value + """\"} """
@@ -513,7 +575,7 @@ ORDER BY ?pname ?enum'''
     results = gridappsd_obj.query_data(query, timeout=120)
     results_obj = results['data']
     for b in results_obj['results']['bindings']:
-        print ( b['pname']['value'], b['bus']['value'],  b['basev']['value'] )
+#         print ( b['pname']['value'], b['bus']['value'],  b['basev']['value'] )
         datum = {'name':  b['pname']['value'],
                  'basekv': b['basev']['value'],
                  'bus':b['bus']['value'],
@@ -523,7 +585,6 @@ ORDER BY ?pname ?enum'''
             datum['phases'] = ['A', 'B', 'C', 'N']
         data.append(datum)
     return data
-
 
 
 def get_basev_from(lines, switches, trans1, trans2):
@@ -621,6 +682,7 @@ def lookup_meas(feeder =u'_4F76A5F9-271D-9EB8-5E31-AA362D86F2C3'):
         name_map[b['trmid']['value']] = b['id']['value']
         name = b['bus']['value'].upper() + '.' + lookup[b['phases']['value']]
         mrid_types.add(b['eqtype']['value'])
+        # print(name, b['type']['value'], b['eqtype']['value'],  b['eqtype']['value'] == u'EnergyConsumer')
         if b['type']['value'] == 'Pos':
             if b['eqtype']['value'] == u'LoadBreakSwitch':
                 switch_pos[name] = b['id']['value']
@@ -1018,6 +1080,8 @@ if __name__ == '__main__':
     # fid_select = '_C1C3E687-6FFD-C753-582B-632A27E28507'
     fid_select = '_AAE94E4A-2465-6F5E-37B1-3E72183A4E44'
     # fid_select = '_DA00D94F-4683-FD19-15D9-8FF002220115'  # mine with house
+    fid_select = '_49AD8E07-3BF9-A4E2-CB8F-C3722F837B62'
+    fid_select = '_C1C3E687-6FFD-C753-582B-632A27E28507'
 
 
     # loads = get_loads_query(fid_select)
@@ -1059,6 +1123,9 @@ if __name__ == '__main__':
     print(regs)
 
     switches = get_switches(fid_select)
+    # self._switches = query_model.get_switches(self.fidselect)
+    # self._switch_name_map = {switch['bus1'].upper() + '.' + query_model.lookup[switch['phases'][0]]: switch['name'] for
+    #                          switch in self._switches}
     print(switches)
 
     lines = get_line_segements(fid_select)

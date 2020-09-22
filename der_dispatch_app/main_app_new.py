@@ -86,6 +86,17 @@ logging.getLogger('stomp.py').setLevel(logging.ERROR)
 
 _log = logging.getLogger(__name__)
 
+import numpy as np
+import zipfile
+
+def saveCompressed(fh, **namedict):
+     with zipfile.ZipFile(fh, mode="w", compression=zipfile.ZIP_DEFLATED,
+                          allowZip64=True) as zf:
+         for k, v in namedict.items():
+             with zf.open(k + '.npy', 'w', force_zip64=True) as buf:
+                 np.lib.npyio.format.write_array(buf,
+                                                 np.asanyarray(v),
+                                                 allow_pickle=True)
 
 class DER_Dispatch(DER_Dispatch_base):
 
@@ -341,28 +352,33 @@ class DER_Dispatch(DER_Dispatch_base):
         # for bn in self._switch_name_map.keys():
         #     print('meas for switch at bus ' + bn + ' ' + self.switch_pos[bn])
 
+
+        self._pv_secondary_to_primary_mapping = query_model.get_pv_secondary_to_primary_map(self.fidselect)
+
         _log.info("Get PVs")
         self.PVSystem = query_model.get_solar(self.fidselect)
 
-        for load in self.PVSystem:
-            for phase_index in range(load['numPhase']):
-                phase_name = load['phases'][phase_index]
+        for pv in self.PVSystem:
+            for phase_index in range(pv['numPhase']):
+                phase_name = pv['phases'][phase_index]
                 # print(load['bus'].upper(), phase_name)
-                name = load['bus'].upper() + '.' + query_model.lookup[phase_name]
+                busname = pv['bus'].upper() + '.' + query_model.lookup[phase_name]
                 # index = self.AllNodeNames.index(name)
-                index = self.all_node_index[name]
+                index = self.all_node_index[busname]
                 # temp_index_list.append(index)
                 # temp_PV_inverter_size.append(float(pv['kVA']))
                 # temp_fdrid.append(pv['pecid'])
-                meas_mrid = self.pec_map[name]
-                self._PV_dict[index] = {'size': float(load['kVA']),
-                                        'fmrid': load['pecid'],
-                                        'id': load['id'],
-                                        'name': load['name'],
-                                        'busname': name,
+                meas_mrid = self.pec_map[busname]
+                self._PV_dict[index] = {'size': float(pv['kVA']),
+                                        'max':0.0,
+                                        'fmrid': pv['pecid'],
+                                        'id': pv['id'],
+                                        'index': index,
+                                        'name': pv['name'],
+                                        'busname': busname,
                                         'meas_mrid': meas_mrid,
-                                        'busphase': load['busphase'],
-                                        'numPhase': load['numPhase'],
+                                        'busphase': pv['busphase'],
+                                        'numPhase': pv['numPhase'],
                                         'last_time': {'p': 0.0, 'q': 0.0},
                                         'current_time': {'p': 0.0, 'q': 0.0},
                                         'polar': {'p': 0.0, 'q': 0.0}
@@ -373,6 +389,23 @@ class DER_Dispatch(DER_Dispatch_base):
 
         # _log.info(json.dumps(self._PV_dict, indent=2))
         self.nodeIndex_withPV = list(self._PV_dict.keys())
+        print(self.nodeIndex_withPV)
+
+        self.nodeIndex_withPV = []
+        for orig_index, pv in self._PV_dict.items():
+            busname = pv['busname']
+            busname_primary = busname
+            index = orig_index
+            bus_size = 0
+            if busname in self._pv_secondary_to_primary_mapping:
+                pv_s_p_dict = self._pv_secondary_to_primary_mapping[busname]['primary_tank']
+                busname_primary = pv_s_p_dict['bus'].upper()+'.'+query_model.lookup[pv_s_p_dict['phases'][0]]
+                index = self.all_node_index[busname_primary]
+                print("primary index",orig_index,index)
+            pv['index_primary'] = index
+            pv['busname_primary'] = busname_primary
+            self.nodeIndex_withPV.append(index)
+
         self.PV_inverter_size = [d[1]['size'] for d in self._PV_dict.items()]
 
         # INFO | [8, 31, 54, 79, 92, 112, 132, 145, 162, 176, 190, 208, 232, 245]
@@ -383,22 +416,22 @@ class DER_Dispatch(DER_Dispatch_base):
         _log.info("PV inverer sizes")
         _log.info(self.PV_inverter_size)
 
-        self.Load, total_load = query_model.get_loads_query(self.fidselect,self._load_scale) #TODO scale
+        self.Load, total_load = query_model.get_loads_query(self.fidselect, self._load_scale) #TODO scale
 
-        for load in self.Load:
-            for phase_index in range(load['numPhase']):
-                phase_name = load['phases'][phase_index]
-                name = load['bus'].upper() + '.' + query_model.lookup[phase_name]
+        for pv in self.Load:
+            for phase_index in range(pv['numPhase']):
+                phase_name = pv['phases'][phase_index]
+                busname = pv['bus'].upper() + '.' + query_model.lookup[phase_name]
                 # index = self.AllNodeNames.index(name)
-                index = self.all_node_index[name]
-                meas_mrid = self.load_power_map[name]
-                self._load_dict[index] = {'name': load['name'],
-                                          'busname': name,
+                index = self.all_node_index[busname]
+                meas_mrid = self.load_power_map[busname]
+                self._load_dict[index] = {'name': pv['name'],
+                                          'busname': busname,
                                           'meas_mrid': meas_mrid,
-                                          'busphase': load['busphase'],
-                                          'numPhase': load['numPhase'],
-                                          'phases': load['phases'],
-                                          'constant_currents': load['constant_currents'],
+                                          'busphase': pv['busphase'],
+                                          'numPhase': pv['numPhase'],
+                                          'phases': pv['phases'],
+                                          'constant_currents': pv['constant_currents'],
                                           'phase': phase_name,
                                           'last_time': {'p': 0.0, 'q': 0.0},
                                           'current_time': {'p': 0.0, 'q': 0.0},
@@ -430,6 +463,8 @@ class DER_Dispatch(DER_Dispatch_base):
             _log.info("self.opf_off_folder")
             _log.info(self.opf_off_folder)
             self.PVoutput_P_df = pd.read_csv(os.path.join(self.opf_off_folder, "PVoutput_P.csv"), index_col='epoch time')
+
+            self.PVoutput_node_bus_P_df = pd.read_csv(os.path.join(self.opf_off_folder, "PVoutput_node_bus_P.csv"), index_col='epoch time')
             # self.PVoutput_P_df.index = pd.to_datetime(self.PVoutput_P_df.index, unit='s')
             self.results_0_df = pd.read_csv(os.path.join(self.opf_off_folder, "result.csv"), index_col='epoch time')
             # self.results_0_df.index = pd.to_datetime(self.results_0_df.index, unit='s')
@@ -467,6 +502,26 @@ class DER_Dispatch(DER_Dispatch_base):
         self.vn_file = open(volt_file, 'a')
         self.vn = csv.writer(self.vn_file, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
         self.vn.writerow(self.AllNodeNames)
+
+        pv_names_node_bus_index_order = [v['name']+'.'+v['busname'] for k, v in self._PV_dict.items()]
+        pv_names_node_bus_index_order.insert(0,'epoch time')
+        filename = os.path.join(self.resFolder, 'PVoutput_node_bus_P.csv')
+        try:
+            os.remove(filename)
+        except:
+            pass
+        self._PV_node_bus_P_csvfile = open(filename, 'a')
+        self._PV_node_bus_P_writer = csv.writer(self._PV_node_bus_P_csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
+        self._PV_node_bus_P_writer.writerow(pv_names_node_bus_index_order)
+
+        filename = os.path.join(self.resFolder, 'PVoutput_node_bus_Q.csv')
+        try:
+            os.remove(filename)
+        except:
+            pass
+        self._PV_node_bus_Q_csvfile = open(filename, 'a')
+        self._PV_node_bus_Q_writer = csv.writer(self._PV_node_bus_Q_csvfile, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
+        self._PV_node_bus_Q_writer.writerow(pv_names_node_bus_index_order)
 
         pv_names_index_order = [v['name'] for k, v in self._PV_dict.items()]
         pv_names_index_order.insert(0,'epoch time')
@@ -512,6 +567,8 @@ class DER_Dispatch(DER_Dispatch_base):
         self.vn_file.close()
         self._PV_P_csvfile.close()
         self._PV_Q_csvfile.close()
+        self._PV_node_bus_P_csvfile.close()
+        self._PV_node_bus_Q_csvfile.close()
         self._skt.close()
         self.save_plots()
         self._is_running = False
@@ -611,6 +668,7 @@ class DER_Dispatch(DER_Dispatch_base):
         # PQ_node = - PQ_load + PQ_PV + 1j * np.array(Qcap)
 
         V_node = query_model.get_PQNode(self.AllNodeNames, meas_map, self.node_name_map_pnv_voltage, convert_to_radian=True)
+        V1_withoutOPF_pu = abs(np.array(V_node)) / np.array(self.Vbase_allnode)
         _log.info(V_node[:self.MAX_LOG_LENGTH])
         for index, v1 in enumerate(V_node):
             if v1.real == 0:
@@ -628,6 +686,7 @@ class DER_Dispatch(DER_Dispatch_base):
         else:
             print("Found meas for " + str(meas_map["_a13724e1-ddc4-4354-a8f9-d731ff110ebd"]))
         Ppv, Qpv, pv_mrids = query_model.get_pv_PQ(self._PV_dict, self.AllNodeNames, meas_map, self.pec_map, convert_to_radian=True)
+
         # print(repr(self.pec_map))
         # for pv_index in self.nodeIndex_withPV:
         #     PVmax.append(Ppv[pv_index] * -vmult)
@@ -648,13 +707,79 @@ class DER_Dispatch(DER_Dispatch_base):
         print(ghi_str)
         _log.info(ghi_str)
         PVmax = [solar_pct * v['size'] for k, v in self._PV_dict.items()]
-
+        PVmax_dict = {}
         if self._RTOPF_flag == 1:
             df_index = self.PVoutput_P_df.index.get_loc(self.timestamp_, method='nearest')
             temp_df = self.PVoutput_P_df.iloc[df_index]
-            PVmax_opf_0 = [-v for k, v in temp_df.items()]
-            PVmax = PVmax_opf_0
+            PVmax = [-v for k, v in temp_df.items()]
+
+            ##
+            df_index = self.PVoutput_node_bus_P_df.index.get_loc(self.timestamp_, method='nearest')
+            temp_df = self.PVoutput_node_bus_P_df.iloc[df_index]
+            # PVmax = [-v for k, v in temp_df.items()]
+            PVmax_dict = {self.all_node_index[k.split('.')[1].upper()+'.'+ k.split('.')[2]]:-v for k, v in temp_df.items()}
             _log.info("PVmax at " + str(self.timestamp_))
+
+        for k, pv in self._PV_dict.items():
+            if self._RTOPF_flag == 1:
+                pv['max'] = PVmax_dict[k]
+            pv['power_pct'] = (abs(pv['current_time']['p']) * self._vmult) /pv['size']
+            # pv['voltage_pu_x'] = V_node[pv['index']] / self.Vbase_allnode[pv['index']]
+            pv['voltage_pu'] = V1_withoutOPF_pu[pv['index']]
+            pv['voltage'] = {'p':V_node[pv['index']].real, 'q': V_node[pv['index']].imag}
+            # pv['voltage_pu_primary_x'] = V_node[pv['index_primary']] / self.Vbase_allnode[pv['index_primary']]
+            pv['voltage_pu_primary'] = V1_withoutOPF_pu[pv['index_primary']]
+            pv['voltage_primary'] = {'p':V_node[pv['index_primary']].real, 'q': V_node[pv['index_primary']].imag}
+
+        ##
+        ##
+        self._combined_pv_dict = {}
+        for orig_index, pv in self._PV_dict.items():
+            datum = {}
+            index = pv['index_primary']
+            datum['busname_primary'] = pv['busname_primary']
+            datum['index_primary'] = index
+            datum['id'] = pv['id']
+            datum['name'] = pv['name']
+            datum['meas_mrid'] = pv['meas_mrid']
+            datum['voltage_pu_primary'] = pv['voltage_pu_primary']
+            datum['voltage_primary'] = pv['voltage_primary']
+            if index in self._combined_pv_dict:
+                datum = self._combined_pv_dict[index]
+                datum['size'] = datum['size'] + pv['size']
+                datum['ratio'] = pv['size'] / datum['size']  # This is based on the assumption that pvs are balanced
+                datum['max'] = datum['max'] + pv['max']
+                datum['current_time']['p'] = datum['current_time']['p'] + pv['current_time']['p']
+                datum['current_time']['q'] = datum['current_time']['q'] + pv['current_time']['q']
+                ## TODO is this right
+                datum['polar']['p'] = datum['polar']['p'] + pv['polar']['p']
+                datum['polar']['q'] = datum['polar']['q'] + pv['polar']['q']
+            else:
+                datum['size'] = pv['size']
+                datum['ratio'] = 1.0
+                datum['max'] = pv['max']
+                datum['current_time'] = pv['current_time']
+                datum['last_time'] = pv['last_time']
+                datum['polar'] = pv['polar']
+                self._combined_pv_dict[index] = datum
+        self.NPV = len(self._combined_pv_dict)
+        print("Checking for over pvs exceeding their rating.")
+        over_power_flag = False
+        for k, pv in self._PV_dict.items():
+            if pv['power_pct'] > 1:
+                over_power_flag =True
+                print(pv['name'] + ' creating to much power ' + str(pv['size']) + ' ' + str(abs(pv['current_time']['p']) * self._vmult))
+        if over_power_flag:
+            print('PVs are producing power above their ratings.')
+        else :
+            print('No PVs are producing power above their ratings.')
+
+        # print("Checking for over pvs not exceeding their rating.")
+        # for k, pv in self._PV_dict.items():
+        #     if pv['power_pct'] < 1:
+        #         print(pv['name'] + ' power at or below rating pct:' + str(pv['power_pct']) + ' size ' + str(pv['size']) +
+        #               ' p ' + str(abs(pv['current_time']['p']) * self._vmult))
+
 
         ## Check for zero pv p
         current_pv = [v['current_time']['p'] for k, v in self._PV_dict.items()]
@@ -686,13 +811,24 @@ class DER_Dispatch(DER_Dispatch_base):
         self.res = {}
         self.res['PV_Poutput'] = np.array([pv[1]['current_time']['p'] * self._vmult for pv in self._PV_dict.items()])
         self.res['PV_Qoutput'] = np.array([pv[1]['current_time']['q'] * self._vmult for pv in self._PV_dict.items()])
+
+        self.res['PV_node_bus_P'] = np.array([pv[1]['current_time']['p'] * self._vmult for pv in self._PV_dict.items()])
+        self.res['PV_node_bus_Q'] = np.array([pv[1]['current_time']['q'] * self._vmult for pv in self._PV_dict.items()])
+
         if self.NPV > 0:
             temp_pv_dict = dict(islice(self._PV_dict.items(), self.MAX_LOG_LENGTH))
             pv_df = pd.DataFrame(temp_pv_dict)
-            pv_df.loc['index'] = pv_df.columns
+            # pv_df.loc['index'] = pv_df.columns
             pv_df.columns = [d[1]['name'] for d in temp_pv_dict.items()]
             print(tabulate(pv_df, headers='keys', tablefmt='psql'))
             _log.info("PV data \n" + tabulate(pv_df, headers='keys', tablefmt='psql'))
+
+            temp_pv_dict = dict(islice(self._combined_pv_dict.items(), self.MAX_LOG_LENGTH))
+            pv_df = pd.DataFrame(temp_pv_dict)
+            # pv_df.loc['index'] = pv_df.columns
+            pv_df.columns = [d[1]['busname_primary'] for d in temp_pv_dict.items()]
+            print(tabulate(pv_df, headers='keys', tablefmt='psql'))
+            _log.info("PV bus primary data \n" + tabulate(pv_df, headers='keys', tablefmt='psql'))
         else:
             print("No PVs!")
             _log.info("No PVs!")
@@ -700,7 +836,7 @@ class DER_Dispatch(DER_Dispatch_base):
         # V1_withoutOPF_pu = np.array(list(map(lambda x: abs(x[0]) / x[1], zip(V_node, self.Vbase_allnode))))
         # print('Test V1_withoutOPF_pu')
         # print(np.allclose(V1_withoutOPF_pu, abs(np.array(V_node)) / np.array(self.Vbase_allnode)))
-        V1_withoutOPF_pu = abs(np.array(V_node)) / np.array(self.Vbase_allnode)
+        # V1_withoutOPF_pu = abs(np.array(V_node)) / np.array(self.Vbase_allnode)
         self.vn.writerow(V1_withoutOPF_pu.tolist())
 
         # v_violation_mask = list(vv < 0.95 or vv > 1.05 for vv in V1_withoutOPF_pu)
@@ -716,6 +852,12 @@ class DER_Dispatch(DER_Dispatch_base):
         self._results['solar_pct'] = solar_pct
         self._results['GHI'] = ghi
         self._results['Diff'] = solar_diff
+
+        PVmax = []
+        for pv in self._combined_pv_dict.values():
+            PVmax.append(pv['max'])
+        print("PVmax")
+        print(PVmax)
         if self._RTOPF_flag == 1:
             self.OPF(PQ_load, PVmax, None, V1_withoutOPF_pu, V_node, self.timestamp_)
 
@@ -773,6 +915,9 @@ class DER_Dispatch(DER_Dispatch_base):
 
         self._PV_P_writer.writerow(np.insert(self.res['PV_Poutput'], 0, self.timestamp_))
         self._PV_Q_writer.writerow(np.insert(self.res['PV_Qoutput'], 0, self.timestamp_))
+
+        self._PV_node_bus_P_writer.writerow(np.insert(self.res['PV_node_bus_P'], 0, self.timestamp_))
+        self._PV_node_bus_Q_writer.writerow(np.insert(self.res['PV_node_bus_Q'], 0, self.timestamp_))
 
         _log.info("Jeff 2")
         # temp_dict = dict()
@@ -840,10 +985,11 @@ class DER_Dispatch(DER_Dispatch_base):
         temp_dict = {pv[1]: {'data': tap_pos[pv[0]], 'time': plot_time} for pv in temp_tap_dict.items()}
         obj[u'Regulator Pos'] = temp_dict
 
-        switch_pos = query_model.get_pos(meas_map, self.switch_pos)
-        temp_switch_dict = dict(islice(self._switch_name_map.items(), self.MAX_LOG_LENGTH))
-        temp_dict = {pv[1]: {'data': switch_pos[pv[0]], 'time': plot_time} for pv in temp_switch_dict.items()}
-        obj[u'Switch Pos'] = temp_dict
+        # switch_pos = query_model.get_pos(meas_map, self.switch_pos)
+        # print(switch_pos)
+        # temp_switch_dict = dict(islice(self._switch_name_map.items(), self.MAX_LOG_LENGTH))
+        # temp_dict = {pv[1]: {'data': switch_pos[pv[0]], 'time': plot_time} for pv in temp_switch_dict.items()}
+        # obj[u'Switch Pos'] = temp_dict
 
         jobj = json.dumps(obj).encode('utf8')
         zobj = zlib.compress(jobj)
@@ -862,15 +1008,15 @@ class DER_Dispatch(DER_Dispatch_base):
                 current_p = pv['current_time']['p']
                 current_q = pv['current_time']['q']
                 if count < MAX_CHECKING:
-                    print('Checking: ' + str(pv['name']) + '.p ' + str(current_p) + ' ' + str(self._PV_setpoints[pv['id']]['p']))
-                    print('Checking: ' + str(pv['name']) + '.q ' + str(current_q) + ' ' + str(self._PV_setpoints[pv['id']]['q']))
+                    print('Checking: ' + str(pv['name']) + '.' + pv['busname'] + '.p ' + str(current_p) + ' ' + str(self._PV_setpoints[pv['id']]['p']))
+                    print('Checking: ' + str(pv['name']) + '.' + pv['busname'] + '.q ' + str(current_q) + ' ' + str(self._PV_setpoints[pv['id']]['q']))
 
                 if count < MAX_CHECKING:
                     if abs(current_p - self._PV_setpoints[pv['id']]['p']) > 2.5 * 1000:
-                        print('Control not set: ' + str(pv['name']) + '.p ' + str(current_p) + ' ' + str(
+                        print('Control not set: ' + str(pv['name']) + '.' + pv['busname'] + '.p ' + str(current_p) + ' ' + str(
                             self._PV_setpoints[pv['id']]['p']))
                     if abs(abs(current_q) - abs(self._PV_setpoints[pv['id']]['q'])) > 5.5:
-                        print('Control not set: ' + str(pv['name']) + '.q ' + str(current_q) + ' ' + str(
+                        print('Control not set: ' + str(pv['name']) + '.' + pv['busname'] + '.q ' + str(current_q) + ' ' + str(
                             self._PV_setpoints[pv['id']]['q']))
 
             self._check_pv_control_flag = False
@@ -983,7 +1129,8 @@ class DER_Dispatch(DER_Dispatch_base):
             # v1_pu = list(map(lambda x: abs(x[0]) / x[1], zip(V1, self.Vbase_allnode)))
             if self.sim_start == 0:  # TODO or if topo change
                 # (Y00, Y01, Y10, Y11_inv, V1, slack_number)
-
+                # np.savez_compressed('V1', V1=V1)
+                saveCompressed('Y_matrix', Y00=self.Y00, Y01=self.Y01, Y10=self.Y10, Y11_inv=self.Y11_inv, V1=V1, slack_number=self.slack_number, slack_start=self.slack_start, slack_end=self.slack_end)
                 self.linear_PFmodel_coeff = opt_function.linear_powerflow_model_slack_sparse_1(self.Y00, self.Y01, self.Y10, self.Y11_inv, V1,
                                                                         self.slack_number, self.slack_start, self.slack_end)
                 # np.savez_compressed('Y_matrix', Y00=self.Y00, Y01=self.Y01, Y10=self.Y10, Y11_inv=self.Y11_inv, V1=V1,
@@ -1006,10 +1153,25 @@ class DER_Dispatch(DER_Dispatch_base):
                 for pv in self._PV_dict.values():
                     PVname.append(pv['name'])
                     PVlocation.append(pv['busname'])
-                    # PVsize.append(float(pv['kW']))
-                    # invertersize.append(float(pv['kVA']))
-                    PVsize.append(float(pv['size'])) # TODO check
+                    PVsize.append(float(pv['size']))
                     invertersize.append(float(pv['size']))
+                print("PVmax")
+                print(PVmax)
+
+                PVname = []
+                PVlocation = []
+                PVsize = []
+                invertersize = []
+                self.nodeIndex_withPV = []
+                for pv in self._combined_pv_dict.values():
+                    PVname.append(pv['name'])
+                    PVlocation.append(pv['busname_primary'])
+                    PVsize.append(float(pv['size']))
+                    invertersize.append(float(pv['size']))
+                    self.nodeIndex_withPV.append(pv['index_primary'])
+                print("self.nodeIndex_withPV")
+                print(self.nodeIndex_withPV)
+
                 _log.info("Jeff OPF 3")
                 # print('invertersize')
                 # print(invertersize)
@@ -1022,6 +1184,7 @@ class DER_Dispatch(DER_Dispatch_base):
                 np.savez_compressed('optgrid', PVname=PVname, PVlocation=PVlocation,
                                     PVsize=PVsize, invertersize=invertersize, control_bus_index=self.control_bus_index
                                     , nodeIndex_withPV= self.nodeIndex_withPV)
+                ## TODO Update bus index with nodeIndex_withPV primary index
                 self._optgrid = RTOPF(PVname, PVlocation, PVsize, invertersize, 'controlBus',  self.control_bus_index, self.nodeIndex_withPV)
                 coeff_PF = self._optgrid.system_topology_identifier(self.linear_PFmodel_coeff)
                 _log.info("Jeff OPF 4")
@@ -1035,6 +1198,10 @@ class DER_Dispatch(DER_Dispatch_base):
             # TODO Add forward - rev for platform PV setpoints
             for pv in self._PV_dict.values():
                 PVpower.append(np.array([pv['current_time']['p'], pv['current_time']['q']]))
+            PVpower = []
+            # TODO Add forward - rev for platform PV setpoints
+            for pv in self._combined_pv_dict.values():
+                PVpower.append(np.array([pv['current_time']['p'], pv['current_time']['q']]))
 
             # print('PVpower')
             # print(repr(PVpower))
@@ -1044,6 +1211,9 @@ class DER_Dispatch(DER_Dispatch_base):
             Vmes = np.concatenate((V1_withoutOPF_pu[:self.slack_start], V1_withoutOPF_pu[self.slack_end + 1:]))
 
             for i in range(self._optimizer_num_iterations):
+                # print('mu cost 593,594 upper {},{} lower {},{}'.format(self.mu0[0][593],self.mu0[0][594],self.mu0[1][593],self.mu0[1][594]))
+                # print('voltage for 593,594 {}, {}'.format(Vmes[593],Vmes[594]))
+                # print(self.mu0[0].max(),self.mu0[0].min())
                 [mu1, self.linear_PFmodel_coeff] = self._optgrid.coordinator(self.mu0, Vmes, self.linear_PFmodel_coeff, self._app_config)
                 # np.savez_compressed('coordinator_args', mu0=self.mu0, Vmes=Vmes, PVpower=PVpower, PVmax=PVmax)
                 x1, results = self._optgrid.DER_optimizer(self.linear_PFmodel_coeff, mu1, PVpower, PVmax, self.slack_start, self.slack_number, self._app_config)
@@ -1053,8 +1223,9 @@ class DER_Dispatch(DER_Dispatch_base):
             # Need matching order MRIDs of PVS
             pv_totals = defaultdict(lambda: {'total_p': 0, 'total_q': 0, 'total_last_p': 0, 'total_last_q': 0})
             self._check_pv_control_flag = True
-            for count, pv in enumerate(self._PV_dict.values()):
+            for count, pv in enumerate(self._combined_pv_dict.values()):
                 p = x1[count]  # KW
+                # q = x1[count + self.NPV]  # kvar
                 q = x1[count + self.NPV]  # kvar
                 # last_p = pv['last_time']['p']
                 # last_q = pv['last_time']['q']
@@ -1071,6 +1242,7 @@ class DER_Dispatch(DER_Dispatch_base):
                 pv_totals[pv['id']]['total_q'] += q
                 pv_totals[pv['id']]['total_last_p'] += last_p
                 pv_totals[pv['id']]['total_last_q'] += last_q
+                pv_totals[pv['id']]['ratio'] = pv['ratio'] # .5 # TODO get from _combined_pv_dict
             inverter_diff = DifferenceBuilder(self.simulation_id)
 
             # dg_42 = '_2B5D7749-6C18-D77E-B848-3F4C31ADC3E6'
@@ -1105,17 +1277,22 @@ class DER_Dispatch(DER_Dispatch_base):
             #     rated_power 150000.000;
             #   };
             # }
+            # pv_totals['_DFF0FD0E-9383-4D6E-8D2C-8BD0809FB5DD']['total_p'] = 12.0
+            # pv_totals['_6D402486-96FB-4666-A3A3-7C0A180041DC']['total_p'] = 1.0
+            pv_count = 0
             for pv_id, pv in pv_totals.items():
-                print("Set forward diff " + pv['name'] + ' ' + pv_id + ' p=' + str(pv['total_p']) + ' q=' + str(pv['total_q']))
-                p = pv['total_p'] * -1000.
-                q = pv['total_q'] * -1000.
+                pv_count += 1
+                if pv_count <= 10:
+                    print("Set forward diff " + pv['name'] + ' ' + pv_id + ' p=' + str(pv['total_p']) + ' q=' + str(pv['total_q']) + ' ratio ' + str(pv['ratio']))
+                p = pv['total_p'] * -1000. * pv['ratio']
+                q = pv['total_q'] * -1000. * pv['ratio']
                 self._PV_setpoints['timestamp'] = timestamp
                 self._PV_setpoints[pv_id] = {'p': p, 'q': q}
                 # print(self._PV_setpoints)
                 # p, q = query_model.cart2pol(p, q)
                 p *= -1
                 q *= -1
-                _log.info("Set forward diff " + pv['name'] + ' ' + pv_id + ' p=' + str(p) + ' q=' + str(q))
+                _log.info("Set forward diff " + pv['name'] + ' ' + pv_id + ' p=' + str(p) + ' q=' + str(q) + ' ratio ' + str(pv['ratio']))
 
                 last_p = pv['polar']['p']
                 last_q = pv['polar']['q']
@@ -1128,9 +1305,17 @@ class DER_Dispatch(DER_Dispatch_base):
                 inverter_diff.add_difference(pv_id, "PowerElectronicsConnection.q", q, last_q)
 
             msg = inverter_diff.get_message()
-            # msg = self.get_message(inverter_diff)
-            # msg = inverter_diff.get_message()
-            # print (msg)
+
+            # TESTING IEEE13 TODO put back
+            # {'command': 'update', 'input': {'simulation_id': 1163566721, 'message': {'timestamp': 1598471051, 'difference_mrid': '7e7c4da9-7762-400d-b241-246722669a6f', 'reverse_differences': [{'object': '_DFF0FD0E-9383-4D6E-8D2C-8BD0809FB5DD', 'attribute': 'PowerElectronicsConnection.p', 'value': 33333.333333}, {'object': '_DFF0FD0E-9383-4D6E-8D2C-8BD0809FB5DD', 'attribute': 'PowerElectronicsConnection.q', 'value': 0.0}, {'object': '_6D402486-96FB-4666-A3A3-7C0A180041DC', 'attribute': 'PowerElectronicsConnection.p', 'value': 2500.0}, {'object': '_6D402486-96FB-4666-A3A3-7C0A180041DC', 'attribute': 'PowerElectronicsConnection.q', 'value': -0.0}], 'forward_differences': [{'object': '_DFF0FD0E-9383-4D6E-8D2C-8BD0809FB5DD', 'attribute': 'PowerElectronicsConnection.p', 'value': 0.0}, {'object': '_DFF0FD0E-9383-4D6E-8D2C-8BD0809FB5DD', 'attribute': 'PowerElectronicsConnection.q', 'value': -176420.46}, {'object': '_6D402486-96FB-4666-A3A3-7C0A180041DC', 'attribute': 'PowerElectronicsConnection.p', 'value': 0.0}, {'object': '_6D402486-96FB-4666-A3A3-7C0A180041DC', 'attribute': 'PowerElectronicsConnection.q', 'value': 5000.0}]}}}
+            # {'command': 'update', 'input': {'simulation_id': 1163566721, 'message': {'timestamp': 1598471104, 'difference_mrid': '55bb3248-1a30-417e-a08e-b6a16e53663b', 'reverse_differences': [{'object': '_DFF0FD0E-9383-4D6E-8D2C-8BD0809FB5DD', 'attribute': 'PowerElectronicsConnection.p', 'value': 33333.333333}, {'object': '_DFF0FD0E-9383-4D6E-8D2C-8BD0809FB5DD', 'attribute': 'PowerElectronicsConnection.q', 'value': -0.0}, {'object': '_6D402486-96FB-4666-A3A3-7C0A180041DC', 'attribute': 'PowerElectronicsConnection.p', 'value': 2500.0}, {'object': '_6D402486-96FB-4666-A3A3-7C0A180041DC', 'attribute': 'PowerElectronicsConnection.q', 'value': -0.0}], 'forward_differences': [{'object': '_DFF0FD0E-9383-4D6E-8D2C-8BD0809FB5DD', 'attribute': 'PowerElectronicsConnection.p', 'value': 0.0}, {'object': '_DFF0FD0E-9383-4D6E-8D2C-8BD0809FB5DD', 'attribute': 'PowerElectronicsConnection.q', 'value': -100000.0}, {'object': '_6D402486-96FB-4666-A3A3-7C0A180041DC', 'attribute': 'PowerElectronicsConnection.p', 'value': 0.0}, {'object': '_6D402486-96FB-4666-A3A3-7C0A180041DC', 'attribute': 'PowerElectronicsConnection.q', 'value': 5000.0}]}}}
+
+            msg_13 = {'command': 'update', 'input': {'simulation_id': 1163566721, 'message': {'timestamp': 1598471051, 'difference_mrid': '7e7c4da9-7762-400d-b241-246722669a6f',
+                                                                                              'reverse_differences': [{'object': '_DFF0FD0E-9383-4D6E-8D2C-8BD0809FB5DD', 'attribute': 'PowerElectronicsConnection.p', 'value': 33333.333333},    {'object': '_DFF0FD0E-9383-4D6E-8D2C-8BD0809FB5DD', 'attribute': 'PowerElectronicsConnection.q', 'value': 0.0}, {'object': '_6D402486-96FB-4666-A3A3-7C0A180041DC', 'attribute': 'PowerElectronicsConnection.p', 'value': 2500.0},    {'object': '_6D402486-96FB-4666-A3A3-7C0A180041DC', 'attribute': 'PowerElectronicsConnection.q', 'value': -0.0}],
+                                                                                              'forward_differences': [{'object': '_DFF0FD0E-9383-4D6E-8D2C-8BD0809FB5DD', 'attribute': 'PowerElectronicsConnection.p', 'value': 33333.333333*.5}, {'object': '_DFF0FD0E-9383-4D6E-8D2C-8BD0809FB5DD', 'attribute': 'PowerElectronicsConnection.q', 'value': 0.0}, {'object': '_6D402486-96FB-4666-A3A3-7C0A180041DC', 'attribute': 'PowerElectronicsConnection.p', 'value': 2500.0*.5}, {'object': '_6D402486-96FB-4666-A3A3-7C0A180041DC', 'attribute': 'PowerElectronicsConnection.q', 'value': -0.0}]}}}
+            msg_13['input']['simulation_id'] = msg['input']['simulation_id']
+            msg_13['input']['message']['timestamp'] = msg['input']['message']['timestamp']
+            # msg = msg_13
             _log.info("Send PV diff msg")
             _log.info(msg)
 
@@ -1267,8 +1452,10 @@ def _main():
     load_scale = sim_request['simulation_config']['model_creation_config']['load_scaling_factor']
     # app_config = [json.loads(app['config_string']) for app in app_config if app['name'] == 'der_dispatch_app'][0]
     app = [app for app in app_config if app['name'] == 'der_dispatch_app'][0]
+    _log.info('config_string')
+    _log.info(app['config_string'])
     if app['config_string']:
-        app_config = json.loads(app['config_string'].replace(u'\u0027', '"'))
+        app_config = json.loads(app['config_string'])
     else:
         app_config = {'run_freq': 60, 'run_on_host': False}
     _log.info(app_config['run_on_host'])
