@@ -1445,7 +1445,12 @@ def _main():
     print(listening_to_topic)
     print(log_topic)
 
-    sim_request = json.loads(opts.request.replace("\'", ""))
+    # print('request')
+    # print(repr(opts.request))
+
+    # sim_request = json.loads(opts.request.replace("\'", ""))
+    sim_request = json.loads(opts.request)
+    # sim_request = opts.request
     model_mrid = sim_request['power_system_config']['Line_name']
     start_time = sim_request['simulation_config']['start_time']
     app_config = sim_request["application_config"]["applications"]
