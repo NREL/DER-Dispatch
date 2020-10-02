@@ -105,9 +105,9 @@ The baseline will be in this folder in the container:
       "stepsize_xp": 0.2,
       "stepsize_xq": 2,
       "coeff_p": 0.005,
-      "coeff_q": 0.005,
-      "Vupper": 1.035,
-      "Vlower": 0.96,
+      "coeff_q": 0.0005,
+      "Vupper": 1.025,
+      "Vlower": 0.95,
       "stepsize_mu": 50000,
       "optimizer_num_iterations": 10
     }
@@ -127,9 +127,9 @@ Set OPF to 1 and run again.
       "stepsize_xp": 0.2,
       "stepsize_xq": 2,
       "coeff_p": 0.005,
-      "coeff_q": 0.005,
-      "Vupper": 1.035,
-      "Vlower": 0.96,
+      "coeff_q": 0.0005,
+      "Vupper": 1.025,
+      "Vlower": 0.95,
       "stepsize_mu": 50000,
       "optimizer_num_iterations": 10
     }

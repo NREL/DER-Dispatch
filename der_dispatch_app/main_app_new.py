@@ -673,9 +673,18 @@ class DER_Dispatch(DER_Dispatch_base):
         for index, v1 in enumerate(V_node):
             if v1.real == 0:
                 # V_node[index] = complex(2424.0, 0.)
-                V_node[index] = complex(self.Vbase_allnode[index], 0.)
-                _log.info("Zero value for " + self.AllNodeNames[index])
-                self._send_simulation_status('RUNNING', "Zero value for node " + self.AllNodeNames[index], 'WARN')
+                # 'X3160861C.2'
+                # print('load', meas_map[self.load_voltage_map['SX3066821A.1']], meas_map[self.load_voltage_map['SX3066821A.2']])
+                # print('line', meas_map[self.line_voltage_map['X3066821A.1'][0]], meas_map[self.line_voltage_map['X3066821A.2'][0]])
+                if self.AllNodeNames[index] in self.node_name_map_pnv_voltage:
+                    mid = self.node_name_map_pnv_voltage[self.AllNodeNames[index]]
+                    V_node[index] = complex(self.Vbase_allnode[index], 0.)
+                    # print("Zero voltage value for " + self.AllNodeNames[index] + " mid " + mid + " at meas id "+meas_map[mid])
+                    _log.info("Zero voltage value for " + self.AllNodeNames[index] + " mid " + mid + " at meas id "+meas_map[mid])
+                    self._send_simulation_status('RUNNING', "Zero voltage value for node " + self.AllNodeNames[index], 'WARN')
+                else:
+                    print(self.AllNodeNames[index] +" not in self.node_name_map_pnv_voltage" )
+
         # V_node = np.concatenate((V_node[:self.slack_start], V_node[self.slack_end+1:]))
 
         ## Test
@@ -748,7 +757,7 @@ class DER_Dispatch(DER_Dispatch_base):
                 datum = self._combined_pv_dict[index]
                 datum['size'] = datum['size'] + pv['size']
                 datum['ratio'] = pv['size'] / datum['size']  # This is based on the assumption that pvs are balanced
-                datum['max'] = datum['max'] + pv['max']
+                # datum['max'] = datum['max'] + pv['max']
                 datum['current_time']['p'] = datum['current_time']['p'] + pv['current_time']['p']
                 datum['current_time']['q'] = datum['current_time']['q'] + pv['current_time']['q']
                 ## TODO is this right
@@ -757,7 +766,7 @@ class DER_Dispatch(DER_Dispatch_base):
             else:
                 datum['size'] = pv['size']
                 datum['ratio'] = 1.0
-                datum['max'] = pv['max']
+                datum['max'] = pv['max']  ## Assumming we get the first phase (.1)
                 datum['current_time'] = pv['current_time']
                 datum['last_time'] = pv['last_time']
                 datum['polar'] = pv['polar']

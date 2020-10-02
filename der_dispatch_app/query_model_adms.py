@@ -705,6 +705,11 @@ def lookup_meas(feeder =u'_4F76A5F9-271D-9EB8-5E31-AA362D86F2C3'):
                     line_map[name] = [b['id']['value']]
         if b['type']['value'] == 'PNV':
             node_name_map_pnv_voltage[name] = b['id']['value']
+            if b['phases']['value'].lower() == "s1" and b['eqtype']['value'] == u'ACLineSegment':
+                node_name_map_pnv_voltage[b['bus']['value'].upper() + '.2'] = \
+                    b['id']['value']
+            # HACK FOR SPLIT PHASE
+
             if b['eqtype']['value'] == u'EnergyConsumer':
                 load_voltage_map[name] = b['id']['value']
             if b['eqtype']['value'] == u'PowerTransformer':
