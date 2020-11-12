@@ -680,7 +680,10 @@ def lookup_meas(feeder =u'_4F76A5F9-271D-9EB8-5E31-AA362D86F2C3'):
 #         name_map[b['id']['value']] = b['name']['value']
 #         print(b['eqtype']['value'] )
         name_map[b['trmid']['value']] = b['id']['value']
-        name = b['bus']['value'].upper() + '.' + lookup[b['phases']['value']]
+        # print(b['name']['value'], b['id']['value'],b['eqtype']['value'], b['bus']['value'].upper())
+        # print(b['phases']['value'])
+        if b['phases']['value'] != 'none': # Soc
+            name = b['bus']['value'].upper() + '.' + lookup[b['phases']['value']]
         mrid_types.add(b['eqtype']['value'])
         # print(name, b['type']['value'], b['eqtype']['value'],  b['eqtype']['value'] == u'EnergyConsumer')
         if b['type']['value'] == 'Pos':
@@ -1087,6 +1090,7 @@ if __name__ == '__main__':
     # fid_select = '_DA00D94F-4683-FD19-15D9-8FF002220115'  # mine with house
     fid_select = '_49AD8E07-3BF9-A4E2-CB8F-C3722F837B62'
     fid_select = '_C1C3E687-6FFD-C753-582B-632A27E28507'
+    fid_select = '_AAE94E4A-2465-6F5E-37B1-3E72183A4E44'
 
 
     # loads = get_loads_query(fid_select)
