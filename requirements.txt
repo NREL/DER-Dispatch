@@ -2,7 +2,7 @@
 -e git+https://github.com/GRIDAPPSD/gridappsd-python.git#egg=gridappsd
 
 stomp.py==4.1.22
-PyYAML==5.1.1
+PyYAML==5.4
 pytz==2019.1
 pyzmq==18.0.0
 numpy==1.16.4
